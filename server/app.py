@@ -134,14 +134,10 @@ def create_job():
             max_angle=_num(b, "max_angle", 60, 10, 180),
             fps=_num(b, "fps", 4, 0.5, 30),
             slow=_num(b, "slow", 3, 1, 8),
-            guide=bool(b.get("guide", True)),
             max_frames=_num(b, "max_frames", 0, 0, MAX_FRAMES_LIMIT, int),
             allow_pano=bool(b.get("allow_pano")),
             smooth=bool(b.get("smooth")),
             align=bool(b.get("align", True)),
-            cues=bool(b.get("cues", True)),
-            road_only=bool(b.get("road", True)),
-            junction_pano=bool(b.get("jpano", True)),
         )
     except ValueError as e:
         return jsonify(error=str(e)), 400

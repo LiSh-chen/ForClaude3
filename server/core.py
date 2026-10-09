@@ -6,7 +6,6 @@ import subprocess
 import time
 from pathlib import Path
 
-import numpy as np
 import requests
 
 import align as aligner
@@ -110,7 +109,7 @@ def nearby_images(token, pt, radius):
     params = {
         "access_token": token,
         "fields": (
-            "id,computed_geometry,computed_compass_angle,thumb_256_url,thumb_1024_url,thumb_2048_url,thumb_original_url,"
+            "id,computed_geometry,computed_compass_angle,thumb_1024_url,thumb_2048_url,"
             "is_pano,sequence,captured_at,camera_parameters"
         ),
         "bbox": f"{pt[1]-dlon},{pt[0]-dlat},{pt[1]+dlon},{pt[0]+dlat}",
@@ -136,7 +135,7 @@ def smooth_headings(pts, step, window_m=25.0):
     return [(p, bearing(pts[max(0, i - k)][0], pts[min(n - 1, i + k)][0])) for i, (p, _) in enumerate(pts)]
 
 
-def candidates_for(images, pt, heading, max_angle, allow_pano=False, align=True, k=8):
+def candidates_for(images, pt, heading, max_angle, allow_pano=False, align=True, k=6):
     """Candidate images near one sample point, cheapest first."""
     out = []
     for im in images:
@@ -152,9 +151,9 @@ def candidates_for(images, pt, heading, max_angle, allow_pano=False, align=True,
         lon, lat = geom["coordinates"]
         d = haversine(pt, (lat, lon))
         out.append({
-            "id": im["id"], "lat": lat, "lon": lon, "seq": im.get("sequence"), "t": im.get("captured_at") or 0,
+            "id": im["id"], "seq": im.get("sequence"), "t": im.get("captured_at") or 0,
             "ang": None if pano else ang, "pano": pano, "cam": im.get("camera_parameters"),
-            "url": url, "thumb": im.get("thumb_256_url"), "hd": heading, "u": d + diff * (0.2 if align else 0.5),
+            "url": url, "hd": heading, "u": d + diff * (0.2 if align else 0.5),
         })
     out.sort(key=lambda c: c["u"])
     return out[:k]
@@ -216,31 +215,21 @@ def maneuvers_of(route):
             if not loc or typ in PLAIN_TYPES or (typ == "turn" and mod in ("", "straight")):
                 continue
             slight = "slight" in mod or any(w in typ for w in ("merge", "ramp", "exit"))
-            out.append({"pt": (loc[1], loc[0]), "sev": 0.6 if slight else 1.0, "type": typ, "mod": mod,
-                        "name": st.get("name") or "", "exit": m.get("exit") or 0})
+            out.append({"pt": (loc[1], loc[0]), "sev": 0.6 if slight else 1.0, "type": typ, "mod": mod})
     return out
-
-
-def locate_maneuvers(pts, maneuvers, step):
-    """Cumulative distance along the sampled route, and (maneuver, sample index) for every decision point on it."""
-    s = [0.0]
-    for i in range(1, len(pts)):
-        s.append(s[-1] + haversine(pts[i - 1][0], pts[i][0]))
-    at = []
-    for m in maneuvers:
-        dists = [haversine(p[0], m["pt"]) for p in pts]
-        bi = min(range(len(pts)), key=dists.__getitem__)
-        if dists[bi] <= max(40.0, step * 2):
-            at.append((m, bi))
-    return s, at
 
 
 def pace_weights(pts, maneuvers, step):
     """0..1 per sample point: how close it is to a decision point or a sharp bend."""
     n = len(pts)
-    s, at = locate_maneuvers(pts, maneuvers, step)
-    w = [0.0] * n
-    for m, bi in at:
+    s, w = [0.0], [0.0] * n
+    for i in range(1, n):
+        s.append(s[-1] + haversine(pts[i - 1][0], pts[i][0]))
+    for m in maneuvers:
+        dists = [haversine(p[0], m["pt"]) for p in pts]
+        bi = min(range(n), key=dists.__getitem__)
+        if dists[bi] > max(40.0, step * 2):
+            continue
         for i in range(n):
             d = s[i] - s[bi]
             z, a = (APPROACH_M if d < 0 else AFTER_M), abs(d)
@@ -254,58 +243,9 @@ def pace_weights(pts, maneuvers, step):
     return w
 
 
-CUE_AHEAD_M, CUE_AFTER_M, CUE_NOW_M = 80.0, 15.0, 8.0
-
-
-def _nearest(line, p):
-    return min(range(len(line)), key=lambda i: haversine(line[i], p))
-
-
-def attach_cues(chosen, fine, maneuvers):
-    """Give every chosen image its cue, measured from where the *camera* was (not from the sample point the image
-    was picked for): the nearest decision point within 80 m ahead / 15 m behind along the route.
-    dist = metres to go, rounded to 10 (0 = at the junction now)."""
-    s = [0.0]
-    for i in range(1, len(fine)):
-        s.append(s[-1] + haversine(fine[i - 1], fine[i]))
-    ms = []
-    for idx, m in enumerate(maneuvers):
-        bi = _nearest(fine, m["pt"])
-        if haversine(fine[bi], m["pt"]) <= 40:
-            ms.append((m, s[bi], idx))
-    for f in chosen:
-        sc = s[_nearest(fine, (f["lat"], f["lon"]))]
-        best = None
-        for m, sm, idx in ms:
-            d = sm - sc
-            if -CUE_AFTER_M <= d <= CUE_AHEAD_M and (best is None or abs(d) < abs(best[1])):
-                best = (m, d, idx)
-        if best is None:
-            f["cue"] = None
-            continue
-        m, d, idx = best
-        f["cue"] = {"type": m["type"], "mod": m["mod"], "name": m["name"], "exit": m["exit"], "pt": m["pt"], "mi": idx, "d": d,
-                    "dist": max(10, round(d / 10) * 10) if d > CUE_NOW_M else 0}
-
-
-GUIDE_FROM_M, GUIDE_TO_M, GUIDE_LEN_M = 10, 60, 45.0
-
-
 def pace_durations(pts, maneuvers, step, slow):
     """Screen time per sample point in units of 1/fps: 1 on open road, up to `slow` at a decision point."""
     return [1 + (slow - 1) * w for w in pace_weights(pts, maneuvers, step)]
-
-
-def route_ahead(fine, cam, length_m=GUIDE_LEN_M):
-    """The next `length_m` of the fine route polyline [(lat, lon)] from the point nearest the camera."""
-    bi = min(range(len(fine)), key=lambda i: haversine(cam, fine[i]))
-    out, acc = [fine[bi]], 0.0
-    for i in range(bi + 1, len(fine)):
-        if acc >= length_m:
-            break
-        acc += haversine(fine[i - 1], fine[i])
-        out.append(fine[i])
-    return out
 
 
 def build_timeline(picks, durs):
@@ -407,76 +347,6 @@ def encode_video(files, durs, fps, smooth, output, check=None, report=None, out_
     return T[-1]
 
 
-JP_BEFORE_MIN, JP_BEFORE_MAX, JP_BEFORE_BEST, JP_CROSS_MAX, JP_ZONE_AHEAD, JP_ZONE_BEHIND = 3.0, 45.0, 15.0, 12.0, 45.0, 8.0
-
-
-def _smoothstep(x):
-    x = max(0.0, min(1.0, x))
-    return x * x * (3 - 2 * x)
-
-
-def _point_at_s(fine, s, target):
-    i = 0
-    while i < len(s) - 1 and s[i] < target:
-        i += 1
-    return fine[i]
-
-
-def pano_shows_road(data, p, heading, fine):
-    """Does a panorama, looking along `heading`, show the road where the route runs? Guards against a wrong compass angle."""
-    from PIL import Image
-    view = aligner.reproject_pano(aligner.pano_source(data), aligner.signed_diff(heading, p["ang"]))
-    small = np.asarray(view.resize((256, 144), Image.BOX))
-    cand = {"lat": p["lat"], "lon": p["lon"], "ang": heading, "cam": [0.596]}   # 0.596 = an 80 degree view
-    score = aligner.road_score(small, cand, route_ahead(fine, (p["lat"], p["lon"]), 45))
-    return score is None or score >= aligner.ROAD_MIN
-
-
-def apply_junction_panos(chosen, pano_pool, fine, maneuvers, guide, get):
-    """For each junction with a panorama just before it: the frames approaching it become views from that one spot,
-    starting along the approach road and swivelling to face the entrance of the road to take, so that road is actually
-    in the picture. Returns how many junctions were done this way."""
-    if not pano_pool:
-        return 0
-    s = [0.0]
-    for i in range(1, len(fine)):
-        s.append(s[-1] + haversine(fine[i - 1], fine[i]))
-    used = 0
-    for k, man in enumerate(maneuvers):
-        bi = _nearest(fine, man["pt"])
-        if haversine(fine[bi], man["pt"]) > 40:
-            continue
-        sm = s[bi]
-        zone = [f for f in chosen if f.get("cue") and f["cue"]["mi"] == k and not f.get("jp")
-                and -JP_ZONE_BEHIND <= f["cue"]["d"] <= JP_ZONE_AHEAD]
-        if len(zone) < 3:
-            continue
-        found = []
-        for p in pano_pool.values():
-            i = _nearest(fine, (p["lat"], p["lon"]))
-            cross, before = haversine(fine[i], (p["lat"], p["lon"])), sm - s[i]
-            if cross <= JP_CROSS_MAX and JP_BEFORE_MIN <= before <= JP_BEFORE_MAX:
-                found.append((abs(before - JP_BEFORE_BEST) + 1.5 * cross, p["id"], p))
-        found.sort(key=lambda t: t[:2])
-        approach = bearing(_point_at_s(fine, s, sm - 18), _point_at_s(fine, s, sm - 3))
-        entry = _point_at_s(fine, s, sm + 12)   # 12 m into the road to take
-        for _, _, p in found[:3]:
-            data = get(p["url2048"])
-            if not data or not pano_shows_road(data, p, approach, fine):
-                continue
-            turn = max(-110.0, min(110.0, aligner.signed_diff(bearing((p["lat"], p["lon"]), entry), approach)))
-            for j, f in enumerate(zone):
-                t = j / (len(zone) - 1)
-                f.update({"id": f"{p['id']}@{k}.{j}", "lat": p["lat"], "lon": p["lon"], "ang": p["ang"], "pano": True,
-                          "url": p["url"], "cam": None, "seq": p["seq"], "jp": True,
-                          "hd": (approach + turn * _smoothstep((t - 0.15) / 0.6)) % 360})
-                f["cue"] = {**f["cue"], "pt": entry}   # is the road to take in view? judge by its entrance
-                f["guide"] = route_ahead(fine, (p["lat"], p["lon"])) if guide else None
-            used += 1
-            break
-    return used
-
-
 def build_video(
     token,
     start,
@@ -490,10 +360,6 @@ def build_video(
     max_angle=60.0,
     fps=4.0,
     slow=3.0,
-    guide=True,
-    cues=True,
-    junction_pano=True,
-    road_only=True,
     allow_pano=False,
     max_frames=0,
     delay=0.1,
@@ -529,64 +395,25 @@ def build_video(
         old.unlink()
 
     # 1. candidates near every sample point, then one consistent chain of images
-    cands, pano_pool, dl_cache = [], {}, {}
-
-    def get(url):   # panoramas are shared by several frames: download once
-        if url not in dl_cache:
-            dl_cache[url] = fetch_bytes(url)
-        return dl_cache[url]
-
+    cands = []
     for i, (pt, hd) in enumerate(pts):
         check()
-        imgs = nearby_images(token, pt, radius)
-        cands.append(candidates_for(imgs, pt, hd, max_angle, allow_pano, align))
-        if junction_pano:
-            for im in imgs:
-                g = im.get("computed_geometry")
-                if (im.get("is_pano") and g and im.get("computed_compass_angle") is not None and im.get("thumb_2048_url")
-                        and im["id"] not in pano_pool):
-                    pano_pool[im["id"]] = {"id": im["id"], "lat": g["coordinates"][1], "lon": g["coordinates"][0],
-                                           "ang": im["computed_compass_angle"], "seq": im.get("sequence"),
-                                           "url2048": im["thumb_2048_url"], "url": im.get("thumb_original_url") or im["thumb_2048_url"]}
+        cands.append(candidates_for(nearby_images(token, pt, radius), pt, hd, max_angle, allow_pano, align))
         time.sleep(delay)
         report("search", i + 1, len(pts))
     picks = choose_path(cands)
-    fine = [p for p, _ in resample(path, 2)]
-    bad = set()   # images where the road is not visible: drop them and choose again from the other candidates
-    if road_only:
-        memo = {}
-        for _ in range(4):
-            todo = {p["id"]: p for p in picks if p and not p["pano"] and p["thumb"] and p["id"] not in memo}
-            for n, p in enumerate(todo.values(), 1):
-                check()
-                data = fetch_bytes(p["thumb"])
-                memo[p["id"]] = aligner.view_check(data, p, route_ahead(fine, (p["lat"], p["lon"]), 45)) if data else None
-                report("check", n, len(todo))
-            fresh = {p["id"] for p in picks if p and aligner.unusable(memo.get(p["id"])) and p["id"] not in bad}
-            if not fresh:
-                break
-            bad |= fresh
-            picks = choose_path([[c for c in lst if c["id"] not in bad] for lst in cands])
-        picks = [None if p and p["id"] in bad else p for p in picks]
     chosen, gaps = build_timeline(picks, pace_durations(pts, maneuvers, step, slow))
     if len(chosen) < 2:
         raise PipelineError(
             "Too few images along this route. Try a larger search radius / angle, or a better-covered road."
         )
-    if cues or guide:   # cue + path are worked out from where each image was really taken
-        attach_cues(chosen, fine, maneuvers)
-        if guide:
-            for c in chosen:
-                if c.get("cue") and GUIDE_FROM_M <= c["cue"]["dist"] <= GUIDE_TO_M:
-                    c["guide"] = route_ahead(fine, (c["lat"], c["lon"]))
-    junctions = apply_junction_panos(chosen, pano_pool, fine, maneuvers, guide, get) if junction_pano else 0
     sequences = len({c["seq"] or c["id"] for c in chosen})
 
     # 2. download each image and align it to the route direction
     files, durs, carry = [], [], 0.0   # a failed download hands its screen time to its neighbour
     for i, c in enumerate(chosen):
         check()
-        data = get(c["url"]) if c["pano"] else fetch_bytes(c["url"])
+        data = fetch_bytes(c["url"])
         if data is None:
             gaps += 1
             if durs:
@@ -595,12 +422,7 @@ def build_video(
                 carry += c["dur"]
         else:
             f = work / f"{len(files) + 1:05d}.jpg"
-            img, view = aligner.align_frame_view(data, c, align)
-            if guide and c.get("guide") and c.get("cue"):
-                aligner.draw_guide(img, view, c["lat"], c["lon"], c["guide"], c["cue"])
-            if cues and c.get("cue"):
-                aligner.draw_cue(img, c["cue"])
-            img.save(f, quality=92)
+            aligner.align_frame(data, c, align).save(f, quality=92)
             files.append(f)
             durs.append(c["dur"] + carry)
             carry = 0.0
@@ -613,4 +435,4 @@ def build_video(
     report("encode", 0, 0, f"{n} frames")
     seconds = encode_video(files, durs, fps, smooth, output, check, report)
     shutil.rmtree(work, ignore_errors=True)
-    return {"frames": n, "gaps": gaps, "distance_m": round(dist), "points": len(pts), "sequences": sequences, "view_skipped": len(bad), "junctions": junctions, "seconds": round(seconds, 1), "turns": len(maneuvers)}
+    return {"frames": n, "gaps": gaps, "distance_m": round(dist), "points": len(pts), "sequences": sequences, "seconds": round(seconds, 1), "turns": len(maneuvers)}

@@ -74,11 +74,7 @@
     <label>播放速度：每秒幾張影像（越小越慢，預設 4）</label><input type="number" id="fps" value="4" min="1" max="30" step="0.5">
     <label>轉彎 / 叉路減速倍數（1 = 不減速）</label><input type="number" id="slow" value="3" min="1" max="8" step="0.5">
     <label>最多影像張數（試跑可填 40）</label><input type="number" id="maxFrames" value="600" min="2" max="3000">
-    <div class="check"><input type="checkbox" id="guide" checked><span>在叉路 / 轉彎前用綠色路徑標示要走的路</span></div>
-    <div class="check"><input type="checkbox" id="cues" checked><span>在轉彎 / 叉路處顯示方向提示文字</span></div>
     <div class="check"><input type="checkbox" id="fade" checked><span>影像間漸變（較順）</span></div>
-    <div class="check"><input type="checkbox" id="jpano" checked><span>路口改用全景圖，視角轉向要走的路（有全景圖時；實驗性）</span></div>
-    <div class="check"><input type="checkbox" id="road" checked><span>只用看得到道路的街景：避開朝天空、牆面或被擋住的畫面（建議）</span></div>
     <div class="check"><input type="checkbox" id="align" checked><span>路線對齊：讓道路方向固定在畫面中央（建議）</span></div>
     <div class="check"><input type="checkbox" id="pano"><span>使用 360° 全景圖並轉正（可對準任何方向，但解析度較低）</span></div>
   </details>
@@ -140,7 +136,7 @@ function smoothHeadings(pts, step, windowM) {
 const signedDiff = (a, b) => ((a - b + 540) % 360) - 180;   // a-b in (-180,180]
 
 /* Candidate images near one sample point, cheapest first. */
-function candidatesFor(images, pt, hd, o, K = 8) {
+function candidatesFor(images, pt, hd, o, K = 6) {
   const out = [];
   for (const im of images) {
     const g = im.computed_geometry, ang = im.computed_compass_angle, pano = !!im.is_pano;
@@ -150,8 +146,8 @@ function candidatesFor(images, pt, hd, o, K = 8) {
     const diff = pano ? 0 : angDiff(ang, hd);
     if (diff > o.maxAngle) continue;
     const d = dist(pt, [g.coordinates[1], g.coordinates[0]]);
-    out.push({ id:im.id, lat:g.coordinates[1], lon:g.coordinates[0], seq:im.sequence || null, t:im.captured_at || 0, ang:pano ? null : ang, pano,
-               cam:im.camera_parameters || null, url, thumb:im.thumb_256_url || null, hd, u:d + diff * (o.align ? 0.2 : 0.5) });
+    out.push({ id:im.id, seq:im.sequence || null, t:im.captured_at || 0, ang:pano ? null : ang, pano,
+               cam:im.camera_parameters || null, url, hd, u:d + diff * (o.align ? 0.2 : 0.5) });
   }
   return out.sort((x, y) => x.u - y.u).slice(0, K);
 }
@@ -188,80 +184,6 @@ function choosePath(cands) {
   return picks;
 }
 
-/* ---------- sky check: skip images where the camera is pointing up at the sky ---------- */
-const SKY_TOTAL = 0.6, SKY_BOTTOM = 0.25;   // share of the picture that is sky / share of its lower half that is sky
-/* Cells (8x8 px of a ~96 px wide copy) that are smooth and blue or white are sky-like; sky is only what connects to the
-   top edge through such cells, so smooth bright pavement at the bottom of a normal view does not count. */
-function skyStats(d, w, h) {
-  const C = 8, cols = Math.floor(w / C), rows = Math.floor(h / C), like = new Array(cols * rows).fill(false);
-  for (let cy = 0; cy < rows; cy++) for (let cx = 0; cx < cols; cx++) {
-    let r = 0, g = 0, b = 0, l = 0, l2 = 0, c = 0, c2 = 0;
-    for (let y = 0; y < C; y++) for (let x = 0; x < C; x++) {
-      const i = ((cy * C + y) * w + cx * C + x) * 4, lum = .299 * d[i] + .587 * d[i+1] + .114 * d[i+2];
-      const bl = d[i+2] - d[i]; r += d[i]; g += d[i+1]; b += d[i+2]; l += lum; l2 += lum * lum; c += bl; c2 += bl * bl;
-    }
-    const n = C * C, mr = r / n, mg = g / n, mb = b / n, ml = l / n, sd = Math.sqrt(Math.max(0, l2 / n - ml * ml)), sc = Math.sqrt(Math.max(0, c2 / n - (c / n) ** 2));   // sd = brightness spread, sc = colour spread
-    const mx = Math.max(mr, mg, mb), sat = (mx - Math.min(mr, mg, mb)) / Math.max(1, mx);
-    like[cy * cols + cx] = sd < 7 && sc < 12 && ((mb > mr + 10 && mb >= mg - 5 && ml > 100) || (ml > 150 && sat < .2));
-  }
-  const sky = new Array(cols * rows).fill(false), stack = [];
-  for (let cx = 0; cx < cols; cx++) if (like[cx]) { sky[cx] = true; stack.push(cx); }
-  while (stack.length) {
-    const i = stack.pop(), x = i % cols, y = (i - x) / cols;
-    for (const [nx, ny] of [[x-1, y], [x+1, y], [x, y-1], [x, y+1]]) {
-      if (nx < 0 || ny < 0 || nx >= cols || ny >= rows) continue;
-      const j = ny * cols + nx; if (like[j] && !sky[j]) { sky[j] = true; stack.push(j); }
-    }
-  }
-  let total = 0, low = 0; const half = Math.floor(rows / 2);
-  for (let i = 0; i < sky.length; i++) if (sky[i]) { total++; if (Math.floor(i / cols) >= half) low++; }
-  return { total:total / (rows * cols), bottom:low / Math.max(1, (rows - half) * cols) };
-}
-const looksAtSky = st => st.total >= SKY_TOTAL || st.bottom >= SKY_BOTTOM;
-/* Is the road where the route should be? Project the next 5-30 m of the route (+-2 m either side) into this picture with its
-   own position, heading and focal length, and see how much of that ribbon looks like road surface. A camera that points at
-   the sky, a wall or the car in front, or sits tilted so far that the road is out of frame, scores low. null = cannot tell. */
-const ROAD_ZS = [5, 8, 12, 17, 23, 30], ROAD_XS = [-2, -1, 0, 1, 2], ROAD_MIN = 0.45;
-function roadLike(r, g, b) {   // grey / tan, not too dark or blown out, not sky blue, not vegetation green
-  const mx = Math.max(r, g, b), mn = Math.min(r, g, b), lum = .299 * r + .587 * g + .114 * b, sat = (mx - mn) / Math.max(1, mx);
-  return sat < .32 && lum > 12 && lum < 215 && !(b > r + 15 && b >= g) && !(g > r + 12 && g > b + 12);
-}
-function roadScore(data, w, h, c, fine) {
-  const view = { cx:w / 2, cy:h / 2, f:(w / 2) / Math.tan(rad(hfovOf(c, w, h)) / 2), heading:c.ang }, cam = [c.lat, c.lon];
-  const g = routeAhead(fine, cam, 45).map(p => {
-    const d = dist(cam, p), rel = rad(signedDiff(bearing(cam, p), view.heading)); return [d * Math.sin(rel), d * Math.cos(rel)];
-  }).filter(q => q[1] > 0);
-  const xAt = Z => {   // lateral offset of the route centre line at depth Z
-    for (let i = 1; i < g.length; i++) {
-      const [x0, z0] = g[i-1], [x1, z1] = g[i];
-      if ((z0 - Z) * (z1 - Z) <= 0 && z1 !== z0) return x0 + (x1 - x0) * (Z - z0) / (z1 - z0);
-    }
-    return null;
-  };
-  let total = 0, road = 0, levels = 0;
-  for (const Z of ROAD_ZS) {
-    const X0 = xAt(Z); if (X0 == null) continue; levels++;
-    for (const dx of ROAD_XS) {
-      total++;
-      const x = Math.round(view.cx + view.f * (X0 + dx) / Z), y = Math.round(view.cy + view.f * CAM_H / Z);
-      if (x < 0 || y < 0 || x >= w || y >= h) continue;   // ribbon outside the picture counts as "no road here"
-      const i = (y * w + x) * 4; if (roadLike(data[i], data[i+1], data[i+2])) road++;
-    }
-  }
-  return levels >= 3 ? road / total : null;
-}
-async function viewCheck(c, fine) {
-  const blob = await fetchBlob(c.thumb); if (!blob) return null;   // cannot tell: keep it
-  const bm = await createImageBitmap(blob), w = bm.width, h = bm.height;
-  const cv = document.createElement('canvas'); cv.width = w; cv.height = h;
-  const ctx = cv.getContext('2d'); ctx.drawImage(bm, 0, 0);
-  const SW = 96, SH = Math.max(16, Math.round(SW * h / w)), sv = document.createElement('canvas'); sv.width = SW; sv.height = SH;
-  const sc = sv.getContext('2d'); sc.drawImage(bm, 0, 0, SW, SH); bm.close();
-  return { sky:looksAtSky(skyStats(sc.getImageData(0, 0, SW, SH).data, SW, SH)),
-           road:c.ang == null ? null : roadScore(ctx.getImageData(0, 0, w, h).data, w, h, c, fine) };
-}
-const unusable = v => !!v && (v.sky || (v.road != null && v.road < ROAD_MIN));
-
 /* ---------- frame alignment: keep the road direction in the middle of every frame ---------- */
 const OW = 1280, OH = 720;
 let PANO_GRID = null;
@@ -275,21 +197,10 @@ function panoGrid(hfov) {
   return PANO_GRID = { hfov, dlon, lat };
 }
 /* Render a perspective view out of an equirectangular panorama, looking along yawRel degrees from its centre. */
-const panoCache = new Map();   // blob -> Promise<{w, h, data}>, newest two kept
-function panoSource(blob) {
-  if (!panoCache.has(blob)) {
-    panoCache.set(blob, (async () => {
-      const bm = await createImageBitmap(blob), w = Math.min(bm.width, 4096), h = Math.round(bm.height * w / bm.width);
-      const cv = document.createElement('canvas'); cv.width = w; cv.height = h;
-      const cx = cv.getContext('2d'); cx.drawImage(bm, 0, 0, w, h); bm.close();
-      return { w, h, data:cx.getImageData(0, 0, w, h).data };
-    })());
-    if (panoCache.size > 2) panoCache.delete(panoCache.keys().next().value);
-  }
-  return panoCache.get(blob);
-}
-function reprojectPano(ctx, pano, yawRel, hfov = 80) {
-  const { w:sw, h:sh, data:src } = pano, out = ctx.createImageData(OW, OH), dst = out.data;
+function reprojectPano(ctx, bmp, yawRel, hfov = 80) {
+  const sw = bmp.width, sh = bmp.height, tmp = document.createElement('canvas');
+  tmp.width = sw; tmp.height = sh; const tc = tmp.getContext('2d'); tc.drawImage(bmp, 0, 0);
+  const src = tc.getImageData(0, 0, sw, sh).data, out = ctx.createImageData(OW, OH), dst = out.data;
   const { dlon, lat } = panoGrid(hfov);
   for (let i = 0, o4 = 0; i < OW * OH; i++, o4 += 4) {
     let u = (dlon[i] + yawRel) / 360 + .5; u -= Math.floor(u);
@@ -312,25 +223,18 @@ function hfovOf(meta, iw, ih) {
 async function alignFrame(blob, meta, o) {
   const cv = document.createElement('canvas'); cv.width = OW; cv.height = OH;
   const ctx = cv.getContext('2d'); ctx.fillStyle = '#000'; ctx.fillRect(0, 0, OW, OH);
-  const bmp = meta.pano ? null : await createImageBitmap(blob);
-  let view;   // camera model of the finished frame: optical-axis pixel, focal length in px, compass heading of the axis
-  if (meta.pano) {
-    reprojectPano(ctx, await panoSource(blob), signedDiff(meta.hd, meta.ang ?? 0));
-    view = { cx:OW / 2, cy:OH / 2, f:(OW / 2) / Math.tan(rad(80) / 2), heading:meta.hd };
-  } else if (o.align) {
+  const bmp = await createImageBitmap(blob);
+  if (meta.pano) reprojectPano(ctx, bmp, signedDiff(meta.hd, meta.ang ?? 0));
+  else if (o.align) {
     const s = Math.max(OW / bmp.width, OH / bmp.height) * 1.12, w = bmp.width * s, h = bmp.height * s;
-    const hf = hfovOf(meta, bmp.width, bmp.height), ppd = w / hf, margin = (w - OW) / 2;
+    const ppd = w / hfovOf(meta, bmp.width, bmp.height), margin = (w - OW) / 2;
     const dx = Math.max(-margin, Math.min(margin, -signedDiff(meta.hd, meta.ang) * ppd));  // yaw error -> pixel shift
     ctx.drawImage(bmp, (OW - w) / 2 + dx, (OH - h) / 2, w, h);
-    view = { cx:OW / 2 + dx, cy:OH / 2, f:(w / 2) / Math.tan(rad(hf) / 2), heading:meta.ang };
   } else {
     const s = Math.min(OW / bmp.width, OH / bmp.height), w = bmp.width * s, h = bmp.height * s;
     ctx.drawImage(bmp, (OW - w) / 2, (OH - h) / 2, w, h);
-    view = { cx:OW / 2, cy:OH / 2, f:(w / 2) / Math.tan(rad(hfovOf(meta, bmp.width, bmp.height)) / 2), heading:meta.ang };
   }
-  if (bmp) bmp.close();
-  if (o.guide && meta.guide && meta.cue) drawGuide(ctx, view, meta.lat, meta.lon, meta.guide, meta.cue);
-  if (o.cues && meta.cue) drawCue(ctx, meta.cue);
+  bmp.close();
   return new Promise(r => cv.toBlob(r, 'image/jpeg', 0.9));
 }
 
@@ -346,28 +250,22 @@ function maneuversOf(route) {
     if (m.type === 'turn' && (mod === 'straight' || !mod)) continue;
     let sev = 1;
     if (/slight/.test(mod) || /merge|ramp|exit/.test(m.type)) sev = 0.6;
-    out.push({ pt:[m.location[1], m.location[0]], sev, type:m.type, mod, name:st.name || '', exit:m.exit || 0 });
+    out.push({ pt:[m.location[1], m.location[0]], sev, type:m.type, mod });
   }
   return out;
 }
-/* Cumulative distance along the sampled route, and the sample each decision point sits at. */
-function locateManeuvers(pts, maneuvers, step) {
-  const n = pts.length, s = [0];
+/* 0..1 per sample point: how close it is to a decision point or a sharp bend. */
+function paceWeights(pts, maneuvers, step) {
+  const n = pts.length, s = [0], w = new Array(n).fill(0);
   for (let i = 1; i < n; i++) s[i] = s[i-1] + dist(pts[i-1].pt, pts[i].pt);
-  const at = [];
   for (const m of maneuvers) {
     let bi = 0, bd = Infinity;
     for (let i = 0; i < n; i++) { const d = dist(pts[i].pt, m.pt); if (d < bd) { bd = d; bi = i; } }
-    if (bd <= Math.max(40, step * 2)) at.push({ m, bi });
-  }
-  return { s, at };
-}
-/* 0..1 per sample point: how close it is to a decision point or a sharp bend. */
-function paceWeights(pts, maneuvers, step) {
-  const n = pts.length, { s, at } = locateManeuvers(pts, maneuvers, step), w = new Array(n).fill(0);
-  for (const { m, bi } of at) for (let i = 0; i < n; i++) {
-    const d = s[i] - s[bi], z = d < 0 ? APPROACH_M : AFTER_M, a = Math.abs(d);
-    if (a < z) w[i] = Math.max(w[i], m.sev * 0.5 * (1 + Math.cos(Math.PI * a / z)));
+    if (bd > Math.max(40, step * 2)) continue;
+    for (let i = 0; i < n; i++) {
+      const d = s[i] - s[bi], z = d < 0 ? APPROACH_M : AFTER_M, a = Math.abs(d);
+      if (a < z) w[i] = Math.max(w[i], m.sev * 0.5 * (1 + Math.cos(Math.PI * a / z)));
+    }
   }
   const k = Math.max(1, Math.round(20 / step));   // bends the router does not call a manoeuvre
   for (let i = k; i < n - k; i++) {
@@ -375,189 +273,6 @@ function paceWeights(pts, maneuvers, step) {
     if (turn > 25) w[i] = Math.max(w[i], Math.min(1, turn / 80));
   }
   return w;
-}
-/* ---------- direction cues drawn onto the video ---------- */
-const CUE_AHEAD_M = 80, CUE_AFTER_M = 15, CUE_NOW_M = 8;
-const DIR_ZH = { left:'左轉', right:'右轉', 'slight left':'靠左', 'slight right':'靠右', 'sharp left':'大角度左轉',
-                 'sharp right':'大角度右轉', uturn:'迴轉', straight:'直行' };
-const DIR_ANGLE = { left:-90, right:90, 'slight left':-40, 'slight right':40, 'sharp left':-135, 'sharp right':135, uturn:180, straight:0 };
-function cuePhrase(m) {
-  const side = /left/.test(m.mod) ? '左' : /right/.test(m.mod) ? '右' : '';
-  const dir = DIR_ZH[m.mod] || '直行';
-  if (/roundabout|rotary/.test(m.type) && m.type !== 'exit roundabout' && m.type !== 'exit rotary')
-    return m.exit ? `進入圓環，第 ${m.exit} 個出口` : '進入圓環';
-  if (/^exit (roundabout|rotary)/.test(m.type)) return '駛出圓環';
-  if (m.type === 'fork') return side ? `叉路靠${side}` : '叉路';
-  if (m.type === 'end of road') return side ? `路底${dir}` : '路底轉彎';
-  if (m.type === 'on ramp') return side ? `上匝道（靠${side}）` : '上匝道';
-  if (m.type === 'off ramp' || m.type === 'exit') return side ? `下匝道（靠${side}）` : '下匝道';
-  if (m.type === 'merge') return side ? `匯入（靠${side}）` : '匯入車道';
-  return dir;
-}
-/* ---------- junctions seen through a panorama: look along the approach road, then turn towards the road to take ---------- */
-const JP = { beforeMin:3, beforeMax:45, beforeBest:15, crossMax:12, zoneAhead:45, zoneBehind:8 };
-const smoothstep = x => { x = Math.max(0, Math.min(1, x)); return x * x * (3 - 2 * x); };
-const pointAtS = (fine, s, target) => { let i = 0; while (i < s.length - 1 && s[i] < target) i++; return fine[i]; };
-/* Does a panorama, looking along `heading`, show the road where the route runs? Guards against a wrong compass angle. */
-async function panoShowsRoad(blob, p, heading, fine) {
-  const src = await panoSource(blob), cv = document.createElement('canvas'); cv.width = OW; cv.height = OH;
-  const cx = cv.getContext('2d'); reprojectPano(cx, src, signedDiff(heading, p.ang));
-  const sm = document.createElement('canvas'); sm.width = 256; sm.height = 144;
-  const sx = sm.getContext('2d'); sx.drawImage(cv, 0, 0, 256, 144);
-  const score = roadScore(sx.getImageData(0, 0, 256, 144).data, 256, 144, { lat:p.lat, lon:p.lon, ang:heading, cam:[0.596] }, fine);   // 0.596 = 80 deg view
-  return score == null || score >= ROAD_MIN;
-}
-/* For each junction with a panorama just before it: the frames approaching it become views from that one spot, starting
-   along the approach road and swivelling to the exit road, so the road to take is actually in the picture. */
-async function applyJunctionPanos(chosen, panoPool, fine, maneuvers, o) {
-  if (!panoPool.size) return 0;
-  const s = [0]; for (let i = 1; i < fine.length; i++) s[i] = s[i-1] + dist(fine[i-1], fine[i]);
-  let used = 0;
-  for (let k = 0; k < maneuvers.length; k++) {
-    const bi = nearestIdx(fine, maneuvers[k].pt); if (dist(fine[bi], maneuvers[k].pt) > 40) continue;
-    const sm = s[bi];
-    const zone = chosen.filter(f => f.cue && f.cue.mi === k && !f.jp && f.cue.d <= JP.zoneAhead && f.cue.d >= -JP.zoneBehind);
-    if (zone.length < 3) continue;
-    const found = [];
-    for (const p of panoPool.values()) {
-      const i = nearestIdx(fine, [p.lat, p.lon]), cross = dist(fine[i], [p.lat, p.lon]), before = sm - s[i];
-      if (cross <= JP.crossMax && before >= JP.beforeMin && before <= JP.beforeMax) found.push({ p, score:Math.abs(before - JP.beforeBest) + 1.5 * cross });
-    }
-    found.sort((a, b) => a.score - b.score);
-    const approach = bearing(pointAtS(fine, s, sm - 18), pointAtS(fine, s, sm - 3)), entry = pointAtS(fine, s, sm + 12);   // 12 m into the road to take
-    for (const { p } of found.slice(0, 3)) {
-      const blob = await fetchBlobCached(p.url2048); if (!blob) continue;
-      if (!(await panoShowsRoad(blob, p, approach, fine))) continue;
-      const turn = Math.max(-110, Math.min(110, signedDiff(bearing([p.lat, p.lon], entry), approach)));   // face the entrance of the road to take, not its direction of travel
-      zone.forEach((f, j) => {
-        const t = zone.length > 1 ? j / (zone.length - 1) : 1, hd = (approach + turn * smoothstep((t - .15) / .6) + 360) % 360;
-        Object.assign(f, { id:`${p.id}@${k}.${j}`, lat:p.lat, lon:p.lon, ang:p.ang, pano:true, url:p.url, cam:null, hd, seq:p.seq, jp:true });
-        f.cue = { ...f.cue, pt:entry };   // is the road to take in view? judge by its entrance, not the junction centre
-        f.guide = o.guide ? routeAhead(fine, [p.lat, p.lon]) : undefined;
-      });
-      used++; break;
-    }
-  }
-  return used;
-}
-/* Index of the point of a polyline nearest to p. */
-function nearestIdx(line, p) {
-  let bi = 0, bd = Infinity;
-  for (let i = 0; i < line.length; i++) { const d = dist(line[i], p); if (d < bd) { bd = d; bi = i; } }
-  return bi;
-}
-/* Cue for every chosen image, measured from where the *camera* was (not from the sample point the image was picked for):
-   the nearest decision point within 80 m ahead / 15 m behind along the route. dist is rounded to 10 m, 0 = at the junction. */
-function attachCues(chosen, fine, maneuvers) {
-  const s = [0]; for (let i = 1; i < fine.length; i++) s[i] = s[i-1] + dist(fine[i-1], fine[i]);
-  const ms = maneuvers.map((m, idx) => { const bi = nearestIdx(fine, m.pt); return { m, idx, s:s[bi], off:dist(fine[bi], m.pt) }; }).filter(x => x.off <= 40);
-  for (const f of chosen) {
-    const sc = s[nearestIdx(fine, [f.lat, f.lon])]; let best = null;
-    for (const x of ms) {
-      const d = x.s - sc;
-      if (d > CUE_AHEAD_M || d < -CUE_AFTER_M) continue;
-      if (!best || Math.abs(d) < Math.abs(best.d)) best = { m:x.m, d, mi:x.idx };
-    }
-    f.cue = best && { phrase:cuePhrase(best.m), name:best.m.name, angle:DIR_ANGLE[best.m.mod] ?? 0, ring:/roundabout|rotary/.test(best.m.type),
-                      pt:best.m.pt, mi:best.mi, d:best.d, dist:best.d > CUE_NOW_M ? Math.max(10, Math.round(best.d / 10) * 10) : 0 };
-  }
-}
-/* ---------- marking the road to take: the route ahead, projected onto the street-view frame ---------- */
-const GUIDE_FROM_M = 10, GUIDE_TO_M = 60, GUIDE_LEN_M = 45, CAM_H = 1.6, LANE_HALF_W = 1.3;
-/* Fine route polyline (every ~2 m) and, for a camera position, the next stretch of it. */
-const fineRoute = path => resample(path, 2).map(p => p.pt);
-function routeAhead(fine, cam, lenM = GUIDE_LEN_M) {
-  let bi = 0, bd = Infinity;
-  for (let i = 0; i < fine.length; i++) { const d = dist(cam, fine[i]); if (d < bd) { bd = d; bi = i; } }
-  const out = [fine[bi]]; let acc = 0;
-  for (let i = bi + 1; i < fine.length && acc < lenM; i++) { acc += dist(fine[i-1], fine[i]); out.push(fine[i]); }
-  return out;
-}
-/* Ground-plane projection (pinhole camera, level, CAM_H above the road) of a ribbon along the route. */
-function guideShape(view, lat, lon, ahead) {
-  const g = [];
-  for (const p of ahead) {
-    const d = dist([lat, lon], p), rel = rad(signedDiff(bearing([lat, lon], p), view.heading));
-    const X = d * Math.sin(rel), Z = d * Math.cos(rel);
-    if (Z >= 3) g.push([X, Z]);
-  }
-  if (g.length < 2) return null;
-  const proj = (X, Z) => [view.cx + view.f * X / Z, view.cy + view.f * CAM_H / Z];
-  const L = [], Rr = [], C = []; let stop = false;
-  g.forEach(([X, Z], i) => {
-    const a = g[Math.max(0, i - 3)], b = g[Math.min(g.length - 1, i + 3)];   // wide window: no kink at a fork
-    let dx = b[0] - a[0], dz = b[1] - a[1]; const n = Math.hypot(dx, dz) || 1; dx /= n; dz /= n;
-    const nx = -dz * LANE_HALF_W, nz = dx * LANE_HALF_W;           // left-hand normal on the ground
-    if (Z - nz < 1 || Z + nz < 1) return;
-    const c = proj(X, Z);
-    const inside = c[0] >= OW * .04 && c[0] <= OW * .96;
-    if (!inside) { if (L.length) stop = true; return; }   // skip leading points outside the frame, stop where the path leaves it
-    if (stop) return;
-    L.push(proj(X + nx, Z + nz)); Rr.push(proj(X - nx, Z - nz)); C.push(c);
-  });
-  return C.length >= 2 ? { L, R:Rr, C } : null;
-}
-/* Where the junction is relative to this frame: 'in' = inside the picture, 'left' / 'right' = ahead but outside the
-   picture, null = too far ahead or already behind the camera (nothing to point at). */
-function junctionState(view, lat, lon, pt) {
-  const d = dist([lat, lon], pt), rel = rad(signedDiff(bearing([lat, lon], pt), view.heading));
-  const X = d * Math.sin(rel), Z = d * Math.cos(rel);
-  if (Z < 3 || Z > 90) return null;
-  const x = view.cx + view.f * X / Z;
-  return x < OW * .06 ? 'left' : x > OW * .94 ? 'right' : 'in';
-}
-/* Marks the way on the frame, but only where the junction is actually in the picture. When it is not (the side road is
-   still out of view), a path would land on pixels without a road, so just point to the side it is on. */
-function drawGuide(ctx, view, lat, lon, ahead, cue) {
-  const state = junctionState(view, lat, lon, cue.pt);
-  if (!state) return;
-  if (state !== 'in') return drawEdgeHint(ctx, state);
-  const sh = guideShape(view, lat, lon, ahead); if (!sh) return;
-  ctx.save();
-  ctx.beginPath(); sh.L.forEach(([x, y], i) => i ? ctx.lineTo(x, y) : ctx.moveTo(x, y));
-  [...sh.R].reverse().forEach(([x, y]) => ctx.lineTo(x, y)); ctx.closePath();
-  ctx.fillStyle = 'rgba(34,197,94,.5)'; ctx.fill();
-  ctx.lineWidth = 3; ctx.strokeStyle = 'rgba(255,255,255,.9)'; ctx.stroke();
-  const n = sh.C.length, [tx, ty] = sh.C[n - 1], [px, py] = sh.C[Math.max(0, n - 4)];
-  const ang = Math.atan2(ty - py, tx - px), wid = Math.min(48, Math.max(16, Math.hypot(sh.L[n-1][0] - sh.R[n-1][0], sh.L[n-1][1] - sh.R[n-1][1]) * 1.6));
-  ctx.translate(tx, ty); ctx.rotate(ang);
-  ctx.beginPath(); ctx.moveTo(wid * 1.2, 0); ctx.lineTo(-wid * .3, -wid * .8); ctx.lineTo(-wid * .3, wid * .8); ctx.closePath();
-  ctx.fillStyle = '#16a34a'; ctx.fill(); ctx.strokeStyle = '#fff'; ctx.lineWidth = 3; ctx.stroke();
-  ctx.restore();
-  const label = '走這條', font = 'system-ui,"Noto Sans TC","PingFang TC","Microsoft JhengHei",sans-serif';
-  ctx.font = `bold 30px ${font}`; const w = ctx.measureText(label).width + 28;
-  const lx = Math.min(OW - w - 10, Math.max(10, tx - w / 2)), ly = Math.min(OH - 60, Math.max(150, ty - 70));
-  ctx.fillStyle = '#16a34a'; ctx.beginPath(); ctx.roundRect(lx, ly, w, 46, 23); ctx.fill();
-  ctx.lineWidth = 3; ctx.strokeStyle = '#fff'; ctx.stroke();
-  ctx.fillStyle = '#fff'; ctx.textBaseline = 'middle'; ctx.textAlign = 'left'; ctx.fillText(label, lx + 14, ly + 24); ctx.textBaseline = 'alphabetic';
-}
-/* "◀ 路口在左側" pill on the edge where the junction lies, for when the road itself is outside the picture. */
-function drawEdgeHint(ctx, side) {
-  const font = 'system-ui,"Noto Sans TC","PingFang TC","Microsoft JhengHei",sans-serif', label = side === 'left' ? '◀ 路口在左側' : '路口在右側 ▶';
-  ctx.font = `bold 30px ${font}`; const w = ctx.measureText(label).width + 32, x = side === 'left' ? 0 : OW - w, y = OH * .5;
-  ctx.fillStyle = 'rgba(245,158,11,.92)'; ctx.beginPath(); ctx.roundRect(x, y, w, 50, 25); ctx.fill();
-  ctx.fillStyle = '#1f2937'; ctx.textBaseline = 'middle'; ctx.textAlign = 'left'; ctx.fillText(label, x + 16, y + 26); ctx.textBaseline = 'alphabetic';
-}
-function drawArrow(ctx, cx, cy, size, angle, ring) {
-  ctx.save(); ctx.translate(cx, cy); ctx.fillStyle = ctx.strokeStyle = '#fff';
-  if (ring) { ctx.lineWidth = size * .09; ctx.beginPath(); ctx.arc(0, 0, size * .6, 0, 2 * Math.PI); ctx.stroke(); size *= .8; }
-  ctx.rotate(rad(angle)); ctx.beginPath();
-  [[0,-.5],[.38,-.05],[.14,-.05],[.14,.5],[-.14,.5],[-.14,-.05],[-.38,-.05]].forEach(([x, y], i) => i ? ctx.lineTo(x * size, y * size) : ctx.moveTo(x * size, y * size));
-  ctx.closePath(); ctx.fill(); ctx.restore();
-}
-/* Banner at the top of the frame: arrow, "50 公尺後 右轉", and the road being entered. */
-function drawCue(ctx, cue) {
-  const font = 'system-ui,"Noto Sans TC","PingFang TC","Microsoft JhengHei",sans-serif';
-  const l1 = cue.dist ? `${cue.dist} 公尺後 ${cue.phrase}` : cue.phrase, l2 = cue.name ? `進入 ${cue.name}` : '';
-  ctx.font = `bold 40px ${font}`; const w1 = ctx.measureText(l1).width;
-  ctx.font = `28px ${font}`; const w2 = l2 ? ctx.measureText(l2).width : 0;
-  const tw = Math.max(w1, w2), bw = Math.min(OW - 40, tw + 150), bh = l2 ? 112 : 84, x = (OW - bw) / 2, y = 24;
-  ctx.fillStyle = 'rgba(15,20,28,.8)'; ctx.beginPath(); ctx.roundRect(x, y, bw, bh, 18); ctx.fill();
-  drawArrow(ctx, x + 56, y + bh / 2, 56, cue.angle, cue.ring);
-  ctx.fillStyle = '#fff'; ctx.textBaseline = 'middle'; ctx.textAlign = 'left';
-  ctx.font = `bold 40px ${font}`; ctx.fillText(l1, x + 110, y + (l2 ? 38 : bh / 2), bw - 125);
-  if (l2) { ctx.font = `28px ${font}`; ctx.fillStyle = '#d6dbe3'; ctx.fillText(l2, x + 110, y + 80, bw - 125); }
-  ctx.textBaseline = 'alphabetic';
 }
 const paceDurations = (pts, maneuvers, step, slow) => paceWeights(pts, maneuvers, step).map(w => 1 + (slow - 1) * w);
 const fmtTime = sec => `${Math.floor(sec / 60)}:${String(Math.round(sec % 60)).padStart(2, '0')}`;
@@ -642,7 +357,7 @@ function estimateSeconds(r) {
 }
 function readOpts() {
   return { step:+$('step').value || 10, radius:+$('radius').value, maxAngle:+$('maxAngle').value, fps:+$('fps').value || 4,
-           slow:+$('slow').value || 1, guide:$('guide').checked, maxFrames:+$('maxFrames').value, fade:$('fade').checked, pano:$('pano').checked, align:$('align').checked, cues:$('cues').checked, road:$('road').checked, jpano:$('jpano').checked };
+           slow:+$('slow').value || 1, maxFrames:+$('maxFrames').value, fade:$('fade').checked, pano:$('pano').checked, align:$('align').checked };
 }
 function drawRoutes(fit) {
   lines.forEach(l => l.remove()); lines = [];
@@ -656,7 +371,7 @@ function drawRoutes(fit) {
   lines[S.sel].bringToFront();
   turnMarks.forEach(m => m.remove()); turnMarks = [];
   S.routes[S.sel].maneuvers.forEach(m => turnMarks.push(L.circleMarker(m.pt, { radius:5, color:'#fff', weight:1.5, fillColor:'#f59e0b', fillOpacity:1 })
-    .bindTooltip(`${cuePhrase(m)}${m.name ? ' → ' + m.name : ''}（影片在此放慢）`).addTo(map)));
+    .bindTooltip('轉彎 / 叉路（影片在此放慢）').addTo(map)));
   if (fit) map.fitBounds(lines[S.sel].getBounds(), { padding:[40, 40] });
   box.replaceChildren(...S.routes.map((r, i) => {
     const lab = document.createElement('label'); lab.className = 'opt' + (i === S.sel ? ' sel' : '');
@@ -705,12 +420,10 @@ async function fetchJSON(url, tries = 4) {
 async function nearby(token, pt, radius) {
   const dlat = radius / 111320, dlon = radius / (111320 * Math.max(Math.cos(rad(pt[0])), .01));
   const bbox = [pt[1]-dlon, pt[0]-dlat, pt[1]+dlon, pt[0]+dlat].join(',');
-  const f = 'id,computed_geometry,computed_compass_angle,thumb_256_url,thumb_1024_url,thumb_2048_url,thumb_original_url,is_pano,sequence,captured_at,camera_parameters';
+  const f = 'id,computed_geometry,computed_compass_angle,thumb_1024_url,thumb_2048_url,is_pano,sequence,captured_at,camera_parameters';
   const d = await fetchJSON(`https://graph.mapillary.com/images?access_token=${encodeURIComponent(token)}&fields=${f}&bbox=${bbox}&limit=100`);
   return d ? d.data || [] : [];
 }
-const blobCache = new Map();
-const fetchBlobCached = url => { if (!blobCache.has(url)) blobCache.set(url, fetchBlob(url)); return blobCache.get(url); };
 async function fetchBlob(url) {
   for (let a = 0; a < 3; a++) {
     checkCancel();
@@ -734,32 +447,12 @@ async function generate() {
     if (pts.length > o.maxFrames) {   // keep the whole route, thin it out evenly
       const k = pts.length / o.maxFrames; pts = Array.from({ length:o.maxFrames }, (_, i) => pts[Math.floor(i * k)]);
     }
-    const cands = new Array(pts.length), panoPool = new Map(); let done = 0;
-    blobCache.clear(); panoCache.clear();
+    const cands = new Array(pts.length); let done = 0;
     await pool(pts, 4, async (p, i) => {
-      const imgs = await nearby(token, p.pt, o.radius);
-      cands[i] = candidatesFor(imgs, p.pt, p.hd, o);
-      if (o.jpano) for (const im of imgs) if (im.is_pano && im.computed_geometry && im.computed_compass_angle != null && im.thumb_2048_url && !panoPool.has(im.id))
-        panoPool.set(im.id, { id:im.id, lat:im.computed_geometry.coordinates[1], lon:im.computed_geometry.coordinates[0], ang:im.computed_compass_angle,
-                              seq:im.sequence || null, url2048:im.thumb_2048_url, url:im.thumb_original_url || im.thumb_2048_url });
+      cands[i] = candidatesFor(await nearby(token, p.pt, o.radius), p.pt, p.hd, o);
       setStatus(`搜尋街景 ${++done}/${pts.length}`, 25 * done / pts.length);
     });
-    let picks = choosePath(cands);   // one consistent chain of images, not the nearest one per point
-    const fine = fineRoute(S.routes[S.sel].path);
-    const bad = new Set();           // images where the road is not visible: drop them and choose again from the other candidates
-    if (o.road) {
-      const memo = new Map();
-      for (let round = 0; round < 4; round++) {
-        const todo = [...new Map(picks.filter(p => p && !p.pano && p.thumb && !memo.has(p.id)).map(p => [p.id, p])).values()];
-        done = 0;
-        await pool(todo, 6, async p => { memo.set(p.id, await viewCheck(p, fine)); setStatus(`檢查畫面 ${++done}/${todo.length}`, 25); });
-        const fresh = picks.filter(p => p && unusable(memo.get(p.id)) && !bad.has(p.id));
-        if (!fresh.length) break;
-        fresh.forEach(p => bad.add(p.id));
-        picks = choosePath(cands.map(l => l.filter(c => !bad.has(c.id))));
-      }
-      picks = picks.map(p => p && bad.has(p.id) ? null : p);
-    }
+    const picks = choosePath(cands);   // one consistent chain of images, not the nearest one per point
     // each chosen image stands for the stretch of road it covers; its screen time follows the pace weights
     const durs = paceDurations(pts, S.routes[S.sel].maneuvers, o.step, o.slow);
     const chosen = []; let last = null, gaps = 0, lead = 0;
@@ -769,21 +462,12 @@ async function generate() {
       else chosen[chosen.length-1].dur += durs[i];
     });
     if (chosen.length < 2) throw new Error('這條路線沿途幾乎沒有街景。試試放寬搜尋半徑 / 角度，或換一條路線。');
-    if (o.cues || o.guide) {   // cue + path are worked out from where each image was really taken
-      attachCues(chosen, fine, S.routes[S.sel].maneuvers);
-      if (o.guide) for (const f of chosen) if (f.cue && f.cue.dist >= GUIDE_FROM_M && f.cue.dist <= GUIDE_TO_M) f.guide = routeAhead(fine, [f.lat, f.lon]);
-    }
-    let jpCount = 0;
-    if (o.jpano) {
-      setStatus('尋找路口的全景圖…', 25);
-      jpCount = await applyJunctionPanos(chosen, panoPool, fine, S.routes[S.sel].maneuvers, o);
-    }
-    const seqs = new Set(chosen.map(c => c.seq || c.id)).size, skipped = bad.size;
+    const seqs = new Set(chosen.map(c => c.seq || c.id)).size;
 
     // 2. download images (kept as compressed blobs to save memory)
     const raw = new Array(chosen.length); done = 0;
     await pool(chosen, 6, async (im, i) => {
-      raw[i] = await fetchBlobCached(im.url);
+      raw[i] = await fetchBlob(im.url);
       setStatus(`下載影像 ${++done}/${chosen.length}`, 25 + 25 * done / chosen.length);
     });
     const ok = []; let carry = 0;   // a failed download hands its screen time to its neighbour
@@ -802,7 +486,7 @@ async function generate() {
 
     // 4. render + record
     const video = await record(frames, ok.map(x => x.m.dur), o, (i, n) => setStatus(`合成影片 ${i}/${n}（請保持此分頁在前景）`, 70 + 30 * i / n));
-    showResult(video, frames.length, gaps, seqs, skipped, jpCount);
+    showResult(video, frames.length, gaps, seqs);
   } catch (e) {
     if (e instanceof Cancelled) setStatus('已取消'); else fail(e.message || String(e));
   } finally {
@@ -858,11 +542,11 @@ async function record(frames, durs, o, onProgress) {
   return new Blob(chunks, { type:mime.split(';')[0] });
 }
 
-function showResult(blob, n, gaps, seqs, skipped, jp) {
+function showResult(blob, n, gaps, seqs) {
   const url = URL.createObjectURL(blob), ext = blob.type === 'video/mp4' ? 'mp4' : 'webm';
   const v = Object.assign(document.createElement('video'), { src:url, controls:true });
   const a = Object.assign(document.createElement('a'), { href:url, download:`route-streetview.${ext}`, className:'dl', textContent:`下載影片（.${ext}，${(blob.size/1048576).toFixed(1)} MB）` });
-  const m = Object.assign(document.createElement('div'), { className:'hint ok', textContent:`完成：${n} 張影像（來自 ${seqs} 段拍攝），${gaps} 處沿途沒有街景${skipped ? '，已避開 ' + skipped + ' 張看不到道路的照片' : ''}${jp ? '，' + jp + ' 個路口使用全景圖轉向' : ''}` });
+  const m = Object.assign(document.createElement('div'), { className:'hint ok', textContent:`完成：${n} 張影像（來自 ${seqs} 段拍攝），${gaps} 處沿途沒有街景` });
   $('result').replaceChildren(m, v, document.createElement('br'), a);
   setStatus('');
 }

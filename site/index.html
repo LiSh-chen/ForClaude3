@@ -74,6 +74,7 @@
     <label>播放速度：每秒幾張影像（越小越慢，預設 4）</label><input type="number" id="fps" value="4" min="1" max="30" step="0.5">
     <label>轉彎 / 叉路減速倍數（1 = 不減速）</label><input type="number" id="slow" value="3" min="1" max="8" step="0.5">
     <label>最多影像張數（試跑可填 40）</label><input type="number" id="maxFrames" value="600" min="2" max="3000">
+    <div class="check"><input type="checkbox" id="cues" checked><span>在轉彎 / 叉路處顯示方向提示文字</span></div>
     <div class="check"><input type="checkbox" id="fade" checked><span>影像間漸變（較順）</span></div>
     <div class="check"><input type="checkbox" id="align" checked><span>路線對齊：讓道路方向固定在畫面中央（建議）</span></div>
     <div class="check"><input type="checkbox" id="pano"><span>使用 360° 全景圖並轉正（可對準任何方向，但解析度較低）</span></div>
@@ -235,6 +236,7 @@ async function alignFrame(blob, meta, o) {
     ctx.drawImage(bmp, (OW - w) / 2, (OH - h) / 2, w, h);
   }
   bmp.close();
+  if (o.cues && meta.cue) drawCue(ctx, meta.cue);
   return new Promise(r => cv.toBlob(r, 'image/jpeg', 0.9));
 }
 
@@ -250,22 +252,28 @@ function maneuversOf(route) {
     if (m.type === 'turn' && (mod === 'straight' || !mod)) continue;
     let sev = 1;
     if (/slight/.test(mod) || /merge|ramp|exit/.test(m.type)) sev = 0.6;
-    out.push({ pt:[m.location[1], m.location[0]], sev, type:m.type, mod });
+    out.push({ pt:[m.location[1], m.location[0]], sev, type:m.type, mod, name:st.name || '', exit:m.exit || 0 });
   }
   return out;
 }
-/* 0..1 per sample point: how close it is to a decision point or a sharp bend. */
-function paceWeights(pts, maneuvers, step) {
-  const n = pts.length, s = [0], w = new Array(n).fill(0);
+/* Cumulative distance along the sampled route, and the sample each decision point sits at. */
+function locateManeuvers(pts, maneuvers, step) {
+  const n = pts.length, s = [0];
   for (let i = 1; i < n; i++) s[i] = s[i-1] + dist(pts[i-1].pt, pts[i].pt);
+  const at = [];
   for (const m of maneuvers) {
     let bi = 0, bd = Infinity;
     for (let i = 0; i < n; i++) { const d = dist(pts[i].pt, m.pt); if (d < bd) { bd = d; bi = i; } }
-    if (bd > Math.max(40, step * 2)) continue;
-    for (let i = 0; i < n; i++) {
-      const d = s[i] - s[bi], z = d < 0 ? APPROACH_M : AFTER_M, a = Math.abs(d);
-      if (a < z) w[i] = Math.max(w[i], m.sev * 0.5 * (1 + Math.cos(Math.PI * a / z)));
-    }
+    if (bd <= Math.max(40, step * 2)) at.push({ m, bi });
+  }
+  return { s, at };
+}
+/* 0..1 per sample point: how close it is to a decision point or a sharp bend. */
+function paceWeights(pts, maneuvers, step) {
+  const n = pts.length, { s, at } = locateManeuvers(pts, maneuvers, step), w = new Array(n).fill(0);
+  for (const { m, bi } of at) for (let i = 0; i < n; i++) {
+    const d = s[i] - s[bi], z = d < 0 ? APPROACH_M : AFTER_M, a = Math.abs(d);
+    if (a < z) w[i] = Math.max(w[i], m.sev * 0.5 * (1 + Math.cos(Math.PI * a / z)));
   }
   const k = Math.max(1, Math.round(20 / step));   // bends the router does not call a manoeuvre
   for (let i = k; i < n - k; i++) {
@@ -273,6 +281,61 @@ function paceWeights(pts, maneuvers, step) {
     if (turn > 25) w[i] = Math.max(w[i], Math.min(1, turn / 80));
   }
   return w;
+}
+/* ---------- direction cues drawn onto the video ---------- */
+const CUE_AHEAD_M = 80, CUE_AFTER_M = 15, CUE_NOW_M = 8;
+const DIR_ZH = { left:'左轉', right:'右轉', 'slight left':'靠左', 'slight right':'靠右', 'sharp left':'大角度左轉',
+                 'sharp right':'大角度右轉', uturn:'迴轉', straight:'直行' };
+const DIR_ANGLE = { left:-90, right:90, 'slight left':-40, 'slight right':40, 'sharp left':-135, 'sharp right':135, uturn:180, straight:0 };
+function cuePhrase(m) {
+  const side = /left/.test(m.mod) ? '左' : /right/.test(m.mod) ? '右' : '';
+  const dir = DIR_ZH[m.mod] || '直行';
+  if (/roundabout|rotary/.test(m.type) && m.type !== 'exit roundabout' && m.type !== 'exit rotary')
+    return m.exit ? `進入圓環，第 ${m.exit} 個出口` : '進入圓環';
+  if (/^exit (roundabout|rotary)/.test(m.type)) return '駛出圓環';
+  if (m.type === 'fork') return side ? `叉路靠${side}` : '叉路';
+  if (m.type === 'end of road') return side ? `路底${dir}` : '路底轉彎';
+  if (m.type === 'on ramp') return side ? `上匝道（靠${side}）` : '上匝道';
+  if (m.type === 'off ramp' || m.type === 'exit') return side ? `下匝道（靠${side}）` : '下匝道';
+  if (m.type === 'merge') return side ? `匯入（靠${side}）` : '匯入車道';
+  return dir;
+}
+/* One cue (or null) per sample point: the nearest decision point within 80 m ahead / 15 m behind. */
+function cuesFor(pts, maneuvers, step) {
+  const { s, at } = locateManeuvers(pts, maneuvers, step);
+  return pts.map((_, i) => {
+    let best = null;
+    for (const { m, bi } of at) {
+      const d = s[bi] - s[i];
+      if (d > CUE_AHEAD_M || d < -CUE_AFTER_M) continue;
+      if (!best || Math.abs(d) < Math.abs(best.d)) best = { m, d };
+    }
+    if (!best) return null;
+    const { m, d } = best;
+    return { phrase:cuePhrase(m), name:m.name, angle:DIR_ANGLE[m.mod] ?? 0, ring:/roundabout|rotary/.test(m.type),
+             dist:d > CUE_NOW_M ? Math.max(10, Math.round(d / 10) * 10) : 0 };
+  });
+}
+function drawArrow(ctx, cx, cy, size, angle, ring) {
+  ctx.save(); ctx.translate(cx, cy); ctx.fillStyle = ctx.strokeStyle = '#fff';
+  if (ring) { ctx.lineWidth = size * .09; ctx.beginPath(); ctx.arc(0, 0, size * .6, 0, 2 * Math.PI); ctx.stroke(); size *= .8; }
+  ctx.rotate(rad(angle)); ctx.beginPath();
+  [[0,-.5],[.38,-.05],[.14,-.05],[.14,.5],[-.14,.5],[-.14,-.05],[-.38,-.05]].forEach(([x, y], i) => i ? ctx.lineTo(x * size, y * size) : ctx.moveTo(x * size, y * size));
+  ctx.closePath(); ctx.fill(); ctx.restore();
+}
+/* Banner at the top of the frame: arrow, "50 公尺後 右轉", and the road being entered. */
+function drawCue(ctx, cue) {
+  const font = 'system-ui,"Noto Sans TC","PingFang TC","Microsoft JhengHei",sans-serif';
+  const l1 = cue.dist ? `${cue.dist} 公尺後 ${cue.phrase}` : cue.phrase, l2 = cue.name ? `進入 ${cue.name}` : '';
+  ctx.font = `bold 40px ${font}`; const w1 = ctx.measureText(l1).width;
+  ctx.font = `28px ${font}`; const w2 = l2 ? ctx.measureText(l2).width : 0;
+  const tw = Math.max(w1, w2), bw = Math.min(OW - 40, tw + 150), bh = l2 ? 112 : 84, x = (OW - bw) / 2, y = 24;
+  ctx.fillStyle = 'rgba(15,20,28,.8)'; ctx.beginPath(); ctx.roundRect(x, y, bw, bh, 18); ctx.fill();
+  drawArrow(ctx, x + 56, y + bh / 2, 56, cue.angle, cue.ring);
+  ctx.fillStyle = '#fff'; ctx.textBaseline = 'middle'; ctx.textAlign = 'left';
+  ctx.font = `bold 40px ${font}`; ctx.fillText(l1, x + 110, y + (l2 ? 38 : bh / 2), bw - 125);
+  if (l2) { ctx.font = `28px ${font}`; ctx.fillStyle = '#d6dbe3'; ctx.fillText(l2, x + 110, y + 80, bw - 125); }
+  ctx.textBaseline = 'alphabetic';
 }
 const paceDurations = (pts, maneuvers, step, slow) => paceWeights(pts, maneuvers, step).map(w => 1 + (slow - 1) * w);
 const fmtTime = sec => `${Math.floor(sec / 60)}:${String(Math.round(sec % 60)).padStart(2, '0')}`;
@@ -357,7 +420,7 @@ function estimateSeconds(r) {
 }
 function readOpts() {
   return { step:+$('step').value || 10, radius:+$('radius').value, maxAngle:+$('maxAngle').value, fps:+$('fps').value || 4,
-           slow:+$('slow').value || 1, maxFrames:+$('maxFrames').value, fade:$('fade').checked, pano:$('pano').checked, align:$('align').checked };
+           slow:+$('slow').value || 1, maxFrames:+$('maxFrames').value, fade:$('fade').checked, pano:$('pano').checked, align:$('align').checked, cues:$('cues').checked };
 }
 function drawRoutes(fit) {
   lines.forEach(l => l.remove()); lines = [];
@@ -371,7 +434,7 @@ function drawRoutes(fit) {
   lines[S.sel].bringToFront();
   turnMarks.forEach(m => m.remove()); turnMarks = [];
   S.routes[S.sel].maneuvers.forEach(m => turnMarks.push(L.circleMarker(m.pt, { radius:5, color:'#fff', weight:1.5, fillColor:'#f59e0b', fillOpacity:1 })
-    .bindTooltip('轉彎 / 叉路（影片在此放慢）').addTo(map)));
+    .bindTooltip(`${cuePhrase(m)}${m.name ? ' → ' + m.name : ''}（影片在此放慢）`).addTo(map)));
   if (fit) map.fitBounds(lines[S.sel].getBounds(), { padding:[40, 40] });
   box.replaceChildren(...S.routes.map((r, i) => {
     const lab = document.createElement('label'); lab.className = 'opt' + (i === S.sel ? ' sel' : '');
@@ -455,11 +518,12 @@ async function generate() {
     const picks = choosePath(cands);   // one consistent chain of images, not the nearest one per point
     // each chosen image stands for the stretch of road it covers; its screen time follows the pace weights
     const durs = paceDurations(pts, S.routes[S.sel].maneuvers, o.step, o.slow);
+    const cues = cuesFor(pts, S.routes[S.sel].maneuvers, o.step);
     const chosen = []; let last = null, gaps = 0, lead = 0;
     picks.forEach((im, i) => {
       if (!im) { gaps++; if (chosen.length) chosen[chosen.length-1].dur += durs[i]; else lead += durs[i]; return; }
-      if (im.id !== last) { chosen.push({ ...im, dur:durs[i] + lead }); lead = 0; last = im.id; }
-      else chosen[chosen.length-1].dur += durs[i];
+      if (im.id !== last) { chosen.push({ ...im, dur:durs[i] + lead, cue:cues[i] }); lead = 0; last = im.id; }
+      else { const f = chosen[chosen.length-1]; f.dur += durs[i]; f.cue = f.cue || cues[i]; }
     });
     if (chosen.length < 2) throw new Error('這條路線沿途幾乎沒有街景。試試放寬搜尋半徑 / 角度，或換一條路線。');
     const seqs = new Set(chosen.map(c => c.seq || c.id)).size;

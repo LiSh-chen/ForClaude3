@@ -109,7 +109,7 @@ def nearby_images(token, pt, radius):
     params = {
         "access_token": token,
         "fields": (
-            "id,computed_geometry,computed_compass_angle,thumb_1024_url,thumb_2048_url,"
+            "id,computed_geometry,computed_compass_angle,thumb_256_url,thumb_1024_url,thumb_2048_url,"
             "is_pano,sequence,captured_at,camera_parameters"
         ),
         "bbox": f"{pt[1]-dlon},{pt[0]-dlat},{pt[1]+dlon},{pt[0]+dlat}",
@@ -135,7 +135,7 @@ def smooth_headings(pts, step, window_m=25.0):
     return [(p, bearing(pts[max(0, i - k)][0], pts[min(n - 1, i + k)][0])) for i, (p, _) in enumerate(pts)]
 
 
-def candidates_for(images, pt, heading, max_angle, allow_pano=False, align=True, k=6):
+def candidates_for(images, pt, heading, max_angle, allow_pano=False, align=True, k=8):
     """Candidate images near one sample point, cheapest first."""
     out = []
     for im in images:
@@ -153,7 +153,7 @@ def candidates_for(images, pt, heading, max_angle, allow_pano=False, align=True,
         out.append({
             "id": im["id"], "lat": lat, "lon": lon, "seq": im.get("sequence"), "t": im.get("captured_at") or 0,
             "ang": None if pano else ang, "pano": pano, "cam": im.get("camera_parameters"),
-            "url": url, "hd": heading, "u": d + diff * (0.2 if align else 0.5),
+            "url": url, "thumb": im.get("thumb_256_url"), "hd": heading, "u": d + diff * (0.2 if align else 0.5),
         })
     out.sort(key=lambda c: c["u"])
     return out[:k]
@@ -421,6 +421,7 @@ def build_video(
     slow=3.0,
     guide=True,
     cues=True,
+    avoid_sky=True,
     allow_pano=False,
     max_frames=0,
     delay=0.1,
@@ -463,6 +464,22 @@ def build_video(
         time.sleep(delay)
         report("search", i + 1, len(pts))
     picks = choose_path(cands)
+    bad = set()   # images that mostly show sky: drop them and choose again from the other candidates
+    if avoid_sky:
+        memo = {}
+        for _ in range(4):
+            todo = {p["id"]: p for p in picks if p and not p["pano"] and p["thumb"] and p["id"] not in memo}
+            for n, p in enumerate(todo.values(), 1):
+                check()
+                data = fetch_bytes(p["thumb"])
+                memo[p["id"]] = bool(data) and aligner.is_sky_image(data)
+                report("check", n, len(todo))
+            fresh = {p["id"] for p in picks if p and memo.get(p["id"]) and p["id"] not in bad}
+            if not fresh:
+                break
+            bad |= fresh
+            picks = choose_path([[c for c in lst if c["id"] not in bad] for lst in cands])
+        picks = [None if p and p["id"] in bad else p for p in picks]
     chosen, gaps = build_timeline(picks, pace_durations(pts, maneuvers, step, slow))
     if len(chosen) < 2:
         raise PipelineError(
@@ -508,4 +525,4 @@ def build_video(
     report("encode", 0, 0, f"{n} frames")
     seconds = encode_video(files, durs, fps, smooth, output, check, report)
     shutil.rmtree(work, ignore_errors=True)
-    return {"frames": n, "gaps": gaps, "distance_m": round(dist), "points": len(pts), "sequences": sequences, "seconds": round(seconds, 1), "turns": len(maneuvers)}
+    return {"frames": n, "gaps": gaps, "distance_m": round(dist), "points": len(pts), "sequences": sequences, "sky_skipped": len(bad), "seconds": round(seconds, 1), "turns": len(maneuvers)}

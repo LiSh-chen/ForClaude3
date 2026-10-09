@@ -287,6 +287,88 @@ def test_draw_guide_only_points_to_the_side_when_the_junction_is_out_of_view():
     assert ImageChops.difference(base, gone).getbbox() is None
 
 
+def _scene(layers, w=640, h=480, seed=7):
+    """layers: [(y0, y1, kind, base, noise)] fractions of height; kind 'sky' = smooth blue gradient."""
+    import numpy as np
+    rng = np.random.default_rng(seed)
+    img = np.zeros((h, w, 3), dtype=np.float32)
+    for y0, y1, kind, base, noise in layers:
+        a, b = int(y0 * h), int(y1 * h)
+        if kind == "sky":
+            ys = np.arange(a, b, dtype=np.float32)[:, None, None]
+            img[a:b] = np.array([120, 170, 235], dtype=np.float32) + ys * np.array([0.05, 0.03, 0], dtype=np.float32)
+        else:
+            img[a:b] = np.array(base, dtype=np.float32) + rng.uniform(-noise / 2, noise / 2, (b - a, w, 3))
+    return np.clip(img, 0, 255).astype(np.uint8)
+
+
+def _sky_verdict(arr):
+    from PIL import Image
+    small = Image.fromarray(arr).resize((96, 72), Image.BOX)
+    import numpy as np
+    return align.looks_at_sky(align.sky_stats(np.asarray(small)))
+
+
+def test_sky_check_rejects_pictures_of_the_sky_and_keeps_street_views():
+    road = ("flat", (110, 110, 112), 40)
+    sunlit_road = ("flat", (185, 185, 189), 4)               # smooth and bright, must not be mistaken for sky
+    overcast = ("flat", (205, 205, 209), 4)
+    town = ("flat", (120, 110, 100), 90)
+    keep = {
+        "normal": [(0, .4, "sky", 0, 0), (.4, .55, *town[:1], town[1], town[2]), (.55, 1, road[0], road[1], road[2])],
+        "overcast_sunlit_road": [(0, .35, "flat", overcast[1], 4), (.35, .55, "flat", (110, 120, 100), 110), (.55, 1, "flat", sunlit_road[1], 4)],
+        "open_horizon": [(0, .5, "sky", 0, 0), (.5, 1, "flat", (170, 170, 174), 4)],
+    }
+    reject = {
+        "up_blue": [(0, .85, "sky", 0, 0), (.85, 1, "flat", (60, 90, 50), 100)],
+        "up_overcast": [(0, .9, "flat", (215, 215, 219), 4), (.9, 1, "flat", (70, 70, 70), 100)],
+        "pure_sky": [(0, 1, "sky", 0, 0)],
+    }
+    for name, layers in keep.items():
+        assert not _sky_verdict(_scene(layers)), name
+    for name, layers in reject.items():
+        assert _sky_verdict(_scene(layers)), name
+
+
+def test_undecodable_thumbnail_is_not_treated_as_sky():
+    assert align.is_sky_image(b"not an image") is False
+
+
+def test_build_video_replaces_sky_images(tmp_path, monkeypatch):
+    import io
+    import shutil
+    from PIL import Image
+    if not shutil.which("ffmpeg"):
+        pytest.skip("ffmpeg missing")
+
+    def jpg(arr):
+        b = io.BytesIO()
+        Image.fromarray(arr).save(b, "JPEG")
+        return b.getvalue()
+    sky = jpg(_scene([(0, 1, "sky", 0, 0)], 320, 240))
+    ok = jpg(_scene([(0, .4, "sky", 0, 0), (.4, .55, "flat", (120, 110, 100), 90), (.55, 1, "flat", (110, 110, 112), 40)], 320, 240))
+    main = jpg(_scene([(0, 1, "flat", (110, 110, 112), 40)], 800, 600))
+    path = [(25.0, 121.0), (25.002, 121.0)]
+    monkeypatch.setattr(core, "get_route", lambda *a, **k: (path, 222, []))
+
+    def near(token, pt, radius):
+        mk = lambda i, dla, thumb: {"id": f"{i}{pt[0]:.6f}", "sequence": "S", "captured_at": 10**12, "camera_parameters": [0.8, 0, 0],
+                                    "computed_geometry": {"coordinates": [121.0, pt[0] + dla]}, "computed_compass_angle": 0,
+                                    "is_pano": False, "thumb_256_url": thumb, "thumb_2048_url": "main"}
+        return [mk("sky", 0.00001, "sky"), mk("ok", 0.00005, "ok")]     # the sky picture is the closer one
+    store = {"sky": sky, "ok": ok, "main": main}
+    monkeypatch.setattr(core, "nearby_images", near)
+    monkeypatch.setattr(core, "fetch_bytes", lambda u: store[u])
+    used = []
+    real = align.align_frame_view
+    monkeypatch.setattr(align, "align_frame_view", lambda data, meta, a=True: (used.append(meta["id"][:2]), real(data, meta, a))[1])
+    r = core.build_video("t", (0, 0), (1, 1), tmp_path / "o.mp4", tmp_path / "f", delay=0)
+    assert set(used) == {"ok"} and r["sky_skipped"] == r["frames"] > 0
+    used.clear()
+    r = core.build_video("t", (0, 0), (1, 1), tmp_path / "o2.mp4", tmp_path / "f2", delay=0, avoid_sky=False)
+    assert set(used) == {"sk"} and r["sky_skipped"] == 0                # filter off: the closer (sky) picture wins
+
+
 @pytest.fixture
 def client(monkeypatch):
     monkeypatch.delenv("MAPILLARY_TOKEN", raising=False)

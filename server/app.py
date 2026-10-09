@@ -140,6 +140,7 @@ def create_job():
             smooth=bool(b.get("smooth")),
             align=bool(b.get("align", True)),
             cues=bool(b.get("cues", True)),
+            avoid_sky=bool(b.get("sky", True)),
         )
     except ValueError as e:
         return jsonify(error=str(e)), 400

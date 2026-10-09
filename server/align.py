@@ -1,4 +1,5 @@
 """Frame alignment: keep the road direction in the middle of every 1280x720 frame."""
+import collections
 import glob
 import io
 import math
@@ -313,3 +314,52 @@ def draw_guide(img, view, lat, lon, ahead, cue):
     d.rounded_rectangle([lx, ly, lx + w, ly + 46], radius=23, fill=(22, 163, 74, 255), outline=(255, 255, 255, 255), width=3)
     d.text((lx + 14, ly + 24), label, font=font, fill=(255, 255, 255, 255), anchor="lm")
     img.paste(Image.alpha_composite(img.convert("RGBA"), layer).convert("RGB"))
+
+
+# ---------- sky check: skip images where the camera is pointing up at the sky ----------
+SKY_TOTAL, SKY_BOTTOM = 0.6, 0.25   # share of the picture that is sky / share of its lower half that is sky
+
+
+def sky_stats(arr):
+    """arr: HxWx3 uint8 (about 96 px wide). Cells of 8x8 px that are smooth (brightness and colour) and blue or white are
+    sky-like; sky is only what connects to the top edge through such cells, so smooth bright pavement at the bottom of
+    a normal view does not count. Returns (share of picture, share of lower half)."""
+    h, w = arr.shape[:2]
+    C = 8
+    rows, cols = h // C, w // C
+    a = arr[: rows * C, : cols * C].astype(np.float32)
+    cells = a.reshape(rows, C, cols, C, 3).transpose(0, 2, 1, 3, 4).reshape(rows, cols, C * C, 3)
+    r, g, b = cells[..., 0], cells[..., 1], cells[..., 2]
+    lum = 0.299 * r + 0.587 * g + 0.114 * b
+    ml, sd, sc = lum.mean(-1), lum.std(-1), (b - r).std(-1)     # sd = brightness spread, sc = colour spread
+    mr, mg, mb = r.mean(-1), g.mean(-1), b.mean(-1)
+    mx = np.maximum(np.maximum(mr, mg), mb)
+    sat = (mx - np.minimum(np.minimum(mr, mg), mb)) / np.maximum(1, mx)
+    like = (sd < 7) & (sc < 12) & (((mb > mr + 10) & (mb >= mg - 5) & (ml > 100)) | ((ml > 150) & (sat < 0.2)))
+    sky = np.zeros_like(like)
+    queue = collections.deque((0, x) for x in range(cols) if like[0, x])
+    for _, x in queue:
+        sky[0, x] = True
+    while queue:
+        y, x = queue.popleft()
+        for ny, nx in ((y - 1, x), (y + 1, x), (y, x - 1), (y, x + 1)):
+            if 0 <= ny < rows and 0 <= nx < cols and like[ny, nx] and not sky[ny, nx]:
+                sky[ny, nx] = True
+                queue.append((ny, nx))
+    half = rows // 2
+    low = sky[half:].sum() / max(1, (rows - half) * cols)
+    return sky.sum() / max(1, rows * cols), low
+
+
+def looks_at_sky(stats):
+    return stats[0] >= SKY_TOTAL or stats[1] >= SKY_BOTTOM
+
+
+def is_sky_image(data):
+    """True if the picture is mostly sky (camera pitched up). Undecodable data counts as fine."""
+    try:
+        img = Image.open(io.BytesIO(data)).convert("RGB")
+    except Exception:
+        return False
+    w, h = 96, max(16, round(96 * img.height / img.width))
+    return looks_at_sky(sky_stats(np.asarray(img.resize((w, h), Image.BOX))))

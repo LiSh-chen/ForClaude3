@@ -276,26 +276,12 @@ def cues_for(pts, maneuvers, step):
     return out
 
 
-HOLD_LEAD_M, GUIDE_FROM_M, GUIDE_TO_M, GUIDE_LEN_M = 25.0, 10, 60, 45.0
+GUIDE_FROM_M, GUIDE_TO_M, GUIDE_LEN_M = 10, 60, 45.0
 
 
-def hold_extra(pts, maneuvers, step, hold_sec, fps):
-    """Extra screen time (in 1/fps units) on the sample ~25 m before each decision point, where the fork is plainly visible."""
-    extra = [0.0] * len(pts)
-    if hold_sec <= 0:
-        return extra
-    s, at = locate_maneuvers(pts, maneuvers, step)
-    for _, bi in at:
-        best = min(range(bi + 1), key=lambda i: abs(s[bi] - s[i] - HOLD_LEAD_M))
-        extra[best] += hold_sec * fps
-    return extra
-
-
-def pace_durations(pts, maneuvers, step, slow, hold=0.0, fps=4.0):
-    """Screen time per sample point in units of 1/fps: 1 on open road, up to `slow` at a decision point,
-    plus a short hold (`hold` seconds) just before each one."""
-    extra = hold_extra(pts, maneuvers, step, hold, fps)
-    return [1 + (slow - 1) * w + e for w, e in zip(pace_weights(pts, maneuvers, step), extra)]
+def pace_durations(pts, maneuvers, step, slow):
+    """Screen time per sample point in units of 1/fps: 1 on open road, up to `slow` at a decision point."""
+    return [1 + (slow - 1) * w for w in pace_weights(pts, maneuvers, step)]
 
 
 def route_ahead(fine, cam, length_m=GUIDE_LEN_M):
@@ -424,7 +410,6 @@ def build_video(
     max_angle=60.0,
     fps=4.0,
     slow=3.0,
-    hold=1.5,
     guide=True,
     cues=True,
     allow_pano=False,
@@ -469,7 +454,7 @@ def build_video(
         time.sleep(delay)
         report("search", i + 1, len(pts))
     picks = choose_path(cands)
-    chosen, gaps = build_timeline(picks, pace_durations(pts, maneuvers, step, slow, hold, fps), cues_for(pts, maneuvers, step))
+    chosen, gaps = build_timeline(picks, pace_durations(pts, maneuvers, step, slow), cues_for(pts, maneuvers, step))
     if len(chosen) < 2:
         raise PipelineError(
             "Too few images along this route. Try a larger search radius / angle, or a better-covered road."

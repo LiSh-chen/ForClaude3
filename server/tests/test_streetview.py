@@ -214,19 +214,6 @@ def _ground(points):
     return [(25.0 + z / 111320.0, 121.0 + x / (111320.0 * math.cos(math.radians(25)))) for x, z in points]
 
 
-def test_hold_lands_25m_before_each_decision_point():
-    pts = core.resample([(25.0, 121.0), (25.0045, 121.0), (25.009, 121.0)], 10)
-    man = [{"pt": pts[50][0], "sev": 1.0}]
-    extra = core.hold_extra(pts, man, 10, 1.5, 4)
-    assert sum(extra) == pytest.approx(6.0) and sum(1 for e in extra if e) == 1     # 1.5 s at 4 images/s
-    hit = next(i for i, e in enumerate(extra) if e)
-    assert 46 <= hit <= 48                                                          # 20-30 m before the junction
-    assert core.hold_extra(pts, man, 10, 0, 4) == [0.0] * len(pts)
-    base = core.pace_durations(pts, man, 10, 3)
-    held = core.pace_durations(pts, man, 10, 3, hold=1.5, fps=4)
-    assert sum(held) - sum(base) == pytest.approx(6.0)
-
-
 def test_route_ahead_takes_next_45m_from_nearest_point():
     fine = [p for p, _ in core.resample(_ground([(0, 0), (0, 200)]), 2)]
     ahead = core.route_ahead(fine, _ground([(1, 50)])[0])

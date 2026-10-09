@@ -81,7 +81,6 @@
     <label>轉彎 / 叉路減速倍數（1 = 不減速）</label><input type="number" id="slow" value="3" min="1" max="8" step="0.5">
     <label>最多幀數（0 = 不限，試跑可填 50）</label><input type="number" id="max_frames" value="0" min="0">
     <div class="check"><input type="checkbox" id="smooth"><span>平滑（混合插幀，較慢）</span></div>
-    <label>叉路 / 轉彎前暫停秒數（0 = 不暫停）</label><input type="number" id="hold" value="1.5" min="0" max="5" step="0.5">
     <div class="check"><input type="checkbox" id="guide" checked><span>在叉路 / 轉彎前用綠色路徑標示要走的路</span></div>
     <div class="check"><input type="checkbox" id="cues" checked><span>在轉彎 / 叉路處顯示方向提示文字</span></div>
     <div class="check"><input type="checkbox" id="align" checked><span>路線對齊：讓道路方向固定在畫面中央（建議）</span></div>
@@ -194,7 +193,7 @@ $('go').onclick = async () => {
   if (!state.serverToken && !token) { $('formErr').textContent = '請輸入 Mapillary token'; return; }
   if (token) store.set('mly_token', token);
   const body = { start:state.start, end:state.end, profile:$('profile').value, token,
-    step:+$('step').value, radius:+$('radius').value, max_angle:+$('max_angle').value, fps:+$('fps').value, slow:+$('slow').value, hold:+$('hold').value, guide:$('guide').checked,
+    step:+$('step').value, radius:+$('radius').value, max_angle:+$('max_angle').value, fps:+$('fps').value, slow:+$('slow').value, guide:$('guide').checked,
     max_frames:+$('max_frames').value, smooth:$('smooth').checked, allow_pano:$('allow_pano').checked, align:$('align').checked, cues:$('cues').checked };
   const r = await fetch('/api/jobs', { method:'POST', headers:{'Content-Type':'application/json'}, body:JSON.stringify(body) });
   const d = await r.json();

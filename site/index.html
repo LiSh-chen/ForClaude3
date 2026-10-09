@@ -74,6 +74,8 @@
     <label>播放速度：每秒幾張影像（越小越慢，預設 4）</label><input type="number" id="fps" value="4" min="1" max="30" step="0.5">
     <label>轉彎 / 叉路減速倍數（1 = 不減速）</label><input type="number" id="slow" value="3" min="1" max="8" step="0.5">
     <label>最多影像張數（試跑可填 40）</label><input type="number" id="maxFrames" value="600" min="2" max="3000">
+    <label>叉路 / 轉彎前暫停秒數（0 = 不暫停）</label><input type="number" id="hold" value="1.5" min="0" max="5" step="0.5">
+    <div class="check"><input type="checkbox" id="guide" checked><span>在叉路 / 轉彎前用綠色路徑標示要走的路</span></div>
     <div class="check"><input type="checkbox" id="cues" checked><span>在轉彎 / 叉路處顯示方向提示文字</span></div>
     <div class="check"><input type="checkbox" id="fade" checked><span>影像間漸變（較順）</span></div>
     <div class="check"><input type="checkbox" id="align" checked><span>路線對齊：讓道路方向固定在畫面中央（建議）</span></div>
@@ -147,7 +149,7 @@ function candidatesFor(images, pt, hd, o, K = 6) {
     const diff = pano ? 0 : angDiff(ang, hd);
     if (diff > o.maxAngle) continue;
     const d = dist(pt, [g.coordinates[1], g.coordinates[0]]);
-    out.push({ id:im.id, seq:im.sequence || null, t:im.captured_at || 0, ang:pano ? null : ang, pano,
+    out.push({ id:im.id, lat:g.coordinates[1], lon:g.coordinates[0], seq:im.sequence || null, t:im.captured_at || 0, ang:pano ? null : ang, pano,
                cam:im.camera_parameters || null, url, hd, u:d + diff * (o.align ? 0.2 : 0.5) });
   }
   return out.sort((x, y) => x.u - y.u).slice(0, K);
@@ -225,17 +227,23 @@ async function alignFrame(blob, meta, o) {
   const cv = document.createElement('canvas'); cv.width = OW; cv.height = OH;
   const ctx = cv.getContext('2d'); ctx.fillStyle = '#000'; ctx.fillRect(0, 0, OW, OH);
   const bmp = await createImageBitmap(blob);
-  if (meta.pano) reprojectPano(ctx, bmp, signedDiff(meta.hd, meta.ang ?? 0));
-  else if (o.align) {
+  let view;   // camera model of the finished frame: optical-axis pixel, focal length in px, compass heading of the axis
+  if (meta.pano) {
+    reprojectPano(ctx, bmp, signedDiff(meta.hd, meta.ang ?? 0));
+    view = { cx:OW / 2, cy:OH / 2, f:(OW / 2) / Math.tan(rad(80) / 2), heading:meta.hd };
+  } else if (o.align) {
     const s = Math.max(OW / bmp.width, OH / bmp.height) * 1.12, w = bmp.width * s, h = bmp.height * s;
-    const ppd = w / hfovOf(meta, bmp.width, bmp.height), margin = (w - OW) / 2;
+    const hf = hfovOf(meta, bmp.width, bmp.height), ppd = w / hf, margin = (w - OW) / 2;
     const dx = Math.max(-margin, Math.min(margin, -signedDiff(meta.hd, meta.ang) * ppd));  // yaw error -> pixel shift
     ctx.drawImage(bmp, (OW - w) / 2 + dx, (OH - h) / 2, w, h);
+    view = { cx:OW / 2 + dx, cy:OH / 2, f:(w / 2) / Math.tan(rad(hf) / 2), heading:meta.ang };
   } else {
     const s = Math.min(OW / bmp.width, OH / bmp.height), w = bmp.width * s, h = bmp.height * s;
     ctx.drawImage(bmp, (OW - w) / 2, (OH - h) / 2, w, h);
+    view = { cx:OW / 2, cy:OH / 2, f:(w / 2) / Math.tan(rad(hfovOf(meta, bmp.width, bmp.height)) / 2), heading:meta.ang };
   }
   bmp.close();
+  if (o.guide && meta.guide) drawGuide(ctx, view, meta.lat, meta.lon, meta.guide);
   if (o.cues && meta.cue) drawCue(ctx, meta.cue);
   return new Promise(r => cv.toBlob(r, 'image/jpeg', 0.9));
 }
@@ -316,6 +324,73 @@ function cuesFor(pts, maneuvers, step) {
              dist:d > CUE_NOW_M ? Math.max(10, Math.round(d / 10) * 10) : 0 };
   });
 }
+/* ---------- marking the road to take: the route ahead, projected onto the street-view frame ---------- */
+const GUIDE_FROM_M = 10, GUIDE_TO_M = 60, GUIDE_LEN_M = 45, CAM_H = 1.6, LANE_HALF_W = 1.3, HOLD_LEAD_M = 25;
+/* Fine route polyline (every ~2 m) and, for a camera position, the next stretch of it. */
+const fineRoute = path => resample(path, 2).map(p => p.pt);
+function routeAhead(fine, cam, lenM = GUIDE_LEN_M) {
+  let bi = 0, bd = Infinity;
+  for (let i = 0; i < fine.length; i++) { const d = dist(cam, fine[i]); if (d < bd) { bd = d; bi = i; } }
+  const out = [fine[bi]]; let acc = 0;
+  for (let i = bi + 1; i < fine.length && acc < lenM; i++) { acc += dist(fine[i-1], fine[i]); out.push(fine[i]); }
+  return out;
+}
+/* Ground-plane projection (pinhole camera, level, CAM_H above the road) of a ribbon along the route. */
+function guideShape(view, lat, lon, ahead) {
+  const g = [];
+  for (const p of ahead) {
+    const d = dist([lat, lon], p), rel = rad(signedDiff(bearing([lat, lon], p), view.heading));
+    const X = d * Math.sin(rel), Z = d * Math.cos(rel);
+    if (Z >= 3) g.push([X, Z]);
+  }
+  if (g.length < 2) return null;
+  const proj = (X, Z) => [view.cx + view.f * X / Z, view.cy + view.f * CAM_H / Z];
+  const L = [], Rr = [], C = []; let stop = false;
+  g.forEach(([X, Z], i) => {
+    const a = g[Math.max(0, i - 3)], b = g[Math.min(g.length - 1, i + 3)];   // wide window: no kink at a fork
+    let dx = b[0] - a[0], dz = b[1] - a[1]; const n = Math.hypot(dx, dz) || 1; dx /= n; dz /= n;
+    const nx = -dz * LANE_HALF_W, nz = dx * LANE_HALF_W;           // left-hand normal on the ground
+    if (Z - nz < 1 || Z + nz < 1) return;
+    const c = proj(X, Z);
+    if (c[0] < OW * .04 || c[0] > OW * .96) { stop = true; return; }   // stop where the path leaves the frame
+    if (stop) return;
+    L.push(proj(X + nx, Z + nz)); Rr.push(proj(X - nx, Z - nz)); C.push(c);
+  });
+  return C.length >= 2 ? { L, R:Rr, C } : null;
+}
+/* Translucent green path with an arrow head and a "走這條" tag on top of the frame. */
+function drawGuide(ctx, view, lat, lon, ahead) {
+  const sh = guideShape(view, lat, lon, ahead); if (!sh) return;
+  ctx.save();
+  ctx.beginPath(); sh.L.forEach(([x, y], i) => i ? ctx.lineTo(x, y) : ctx.moveTo(x, y));
+  [...sh.R].reverse().forEach(([x, y]) => ctx.lineTo(x, y)); ctx.closePath();
+  ctx.fillStyle = 'rgba(34,197,94,.5)'; ctx.fill();
+  ctx.lineWidth = 3; ctx.strokeStyle = 'rgba(255,255,255,.9)'; ctx.stroke();
+  const n = sh.C.length, [tx, ty] = sh.C[n - 1], [px, py] = sh.C[Math.max(0, n - 4)];
+  const ang = Math.atan2(ty - py, tx - px), wid = Math.min(48, Math.max(16, Math.hypot(sh.L[n-1][0] - sh.R[n-1][0], sh.L[n-1][1] - sh.R[n-1][1]) * 1.6));
+  ctx.translate(tx, ty); ctx.rotate(ang);
+  ctx.beginPath(); ctx.moveTo(wid * 1.2, 0); ctx.lineTo(-wid * .3, -wid * .8); ctx.lineTo(-wid * .3, wid * .8); ctx.closePath();
+  ctx.fillStyle = '#16a34a'; ctx.fill(); ctx.strokeStyle = '#fff'; ctx.lineWidth = 3; ctx.stroke();
+  ctx.restore();
+  const label = '走這條', font = 'system-ui,"Noto Sans TC","PingFang TC","Microsoft JhengHei",sans-serif';
+  ctx.font = `bold 30px ${font}`; const w = ctx.measureText(label).width + 28;
+  const lx = Math.min(OW - w - 10, Math.max(10, tx - w / 2)), ly = Math.min(OH - 60, Math.max(150, ty - 70));
+  ctx.fillStyle = '#16a34a'; ctx.beginPath(); ctx.roundRect(lx, ly, w, 46, 23); ctx.fill();
+  ctx.lineWidth = 3; ctx.strokeStyle = '#fff'; ctx.stroke();
+  ctx.fillStyle = '#fff'; ctx.textBaseline = 'middle'; ctx.textAlign = 'left'; ctx.fillText(label, lx + 14, ly + 24); ctx.textBaseline = 'alphabetic';
+}
+/* Extra screen time (in 1/fps units) on the sample ~25 m before each decision point, where the fork is plainly visible. */
+function holdExtra(pts, maneuvers, step, holdSec, fps) {
+  const extra = new Array(pts.length).fill(0);
+  if (!(holdSec > 0)) return extra;
+  const { s, at } = locateManeuvers(pts, maneuvers, step);
+  for (const { bi } of at) {
+    let best = 0, bd = Infinity;
+    for (let i = 0; i <= bi; i++) { const d = Math.abs(s[bi] - s[i] - HOLD_LEAD_M); if (d < bd) { bd = d; best = i; } }
+    extra[best] += holdSec * fps;
+  }
+  return extra;
+}
 function drawArrow(ctx, cx, cy, size, angle, ring) {
   ctx.save(); ctx.translate(cx, cy); ctx.fillStyle = ctx.strokeStyle = '#fff';
   if (ring) { ctx.lineWidth = size * .09; ctx.beginPath(); ctx.arc(0, 0, size * .6, 0, 2 * Math.PI); ctx.stroke(); size *= .8; }
@@ -338,6 +413,11 @@ function drawCue(ctx, cue) {
   ctx.textBaseline = 'alphabetic';
 }
 const paceDurations = (pts, maneuvers, step, slow) => paceWeights(pts, maneuvers, step).map(w => 1 + (slow - 1) * w);
+/* Screen time per sample: slower near decision points, plus a short hold just before each one. */
+const timelineDurations = (pts, maneuvers, step, o) => {
+  const extra = holdExtra(pts, maneuvers, step, o.hold, o.fps);
+  return paceDurations(pts, maneuvers, step, o.slow).map((d, i) => d + extra[i]);
+};
 const fmtTime = sec => `${Math.floor(sec / 60)}:${String(Math.round(sec % 60)).padStart(2, '0')}`;
 
 /* ---------- map ---------- */
@@ -416,11 +496,11 @@ function estimateSeconds(r) {
   let pts = resample(r.path, o.step);
   const cap = o.maxFrames || pts.length;
   if (pts.length > cap) { const k = pts.length / cap; pts = Array.from({ length:cap }, (_, i) => pts[Math.floor(i * k)]); }
-  return paceDurations(pts, r.maneuvers, o.step, o.slow).reduce((a, b) => a + b, 0) / o.fps;
+  return timelineDurations(pts, r.maneuvers, o.step, o).reduce((a, b) => a + b, 0) / o.fps;
 }
 function readOpts() {
   return { step:+$('step').value || 10, radius:+$('radius').value, maxAngle:+$('maxAngle').value, fps:+$('fps').value || 4,
-           slow:+$('slow').value || 1, maxFrames:+$('maxFrames').value, fade:$('fade').checked, pano:$('pano').checked, align:$('align').checked, cues:$('cues').checked };
+           slow:+$('slow').value || 1, hold:+$('hold').value || 0, guide:$('guide').checked, maxFrames:+$('maxFrames').value, fade:$('fade').checked, pano:$('pano').checked, align:$('align').checked, cues:$('cues').checked };
 }
 function drawRoutes(fit) {
   lines.forEach(l => l.remove()); lines = [];
@@ -448,7 +528,7 @@ function drawRoutes(fit) {
   }));
   $('go').disabled = S.busy;
 }
-$('step').onchange = $('fps').onchange = $('slow').onchange = $('maxFrames').onchange = () => drawRoutes();
+$('step').onchange = $('fps').onchange = $('slow').onchange = $('hold').onchange = $('maxFrames').onchange = () => drawRoutes();
 
 /* ---------- token ---------- */
 $('token').value = store.get('mly_token') || '';
@@ -517,7 +597,7 @@ async function generate() {
     });
     const picks = choosePath(cands);   // one consistent chain of images, not the nearest one per point
     // each chosen image stands for the stretch of road it covers; its screen time follows the pace weights
-    const durs = paceDurations(pts, S.routes[S.sel].maneuvers, o.step, o.slow);
+    const durs = timelineDurations(pts, S.routes[S.sel].maneuvers, o.step, o);
     const cues = cuesFor(pts, S.routes[S.sel].maneuvers, o.step);
     const chosen = []; let last = null, gaps = 0, lead = 0;
     picks.forEach((im, i) => {
@@ -526,6 +606,10 @@ async function generate() {
       else { const f = chosen[chosen.length-1]; f.dur += durs[i]; f.cue = f.cue || cues[i]; }
     });
     if (chosen.length < 2) throw new Error('這條路線沿途幾乎沒有街景。試試放寬搜尋半徑 / 角度，或換一條路線。');
+    if (o.guide) {   // frames shortly before a decision point get the route ahead drawn on them
+      const fine = fineRoute(S.routes[S.sel].path);
+      for (const f of chosen) if (f.cue && f.cue.dist >= GUIDE_FROM_M && f.cue.dist <= GUIDE_TO_M) f.guide = routeAhead(fine, [f.lat, f.lon]);
+    }
     const seqs = new Set(chosen.map(c => c.seq || c.id)).size;
 
     // 2. download images (kept as compressed blobs to save memory)

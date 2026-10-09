@@ -52,27 +52,37 @@ def reproject_pano(img, yaw_rel, hfov=80.0):
     return Image.fromarray((top * (1 - ty) + bot * ty).clip(0, 255).astype(np.uint8))
 
 
-def align_frame(data, meta, align=True):
-    """JPEG/PNG bytes + candidate meta (ang, hd, pano, cam) -> 1280x720 RGB image."""
+def align_frame_view(data, meta, align=True):
+    """Like align_frame, but also returns the camera model of the finished frame:
+    {cx, cy: optical-axis pixel, f: focal length in px, heading: compass heading of the axis}."""
     img = Image.open(io.BytesIO(data)).convert("RGB")
     iw, ih = img.size
     if meta["pano"]:
-        return reproject_pano(img, signed_diff(meta["hd"], meta["ang"] or 0.0))
+        out = reproject_pano(img, signed_diff(meta["hd"], meta["ang"] or 0.0))
+        return out, {"cx": OW / 2, "cy": OH / 2, "f": (OW / 2) / math.tan(math.radians(80) / 2), "heading": meta["hd"]}
+    hf = hfov_of(meta.get("cam"), iw, ih)
     if align:
         s = max(OW / iw, OH / ih) * 1.12
         w, h = round(iw * s), round(ih * s)
         img = img.resize((w, h), Image.LANCZOS)
-        ppd = w / hfov_of(meta.get("cam"), iw, ih)
+        ppd = w / hf
         margin = (w - OW) / 2
         dx = max(-margin, min(margin, -signed_diff(meta["hd"], meta["ang"]) * ppd))  # yaw error -> shift
         left = max(0, min(w - OW, round((w - OW) / 2 - dx)))
         top = (h - OH) // 2
-        return img.crop((left, top, left + OW, top + OH))
+        view = {"cx": OW / 2 + ((w - OW) / 2 - left), "cy": OH / 2, "f": (w / 2) / math.tan(math.radians(hf) / 2),
+                "heading": meta["ang"]}
+        return img.crop((left, top, left + OW, top + OH)), view
     s = min(OW / iw, OH / ih)
     img = img.resize((round(iw * s), round(ih * s)), Image.LANCZOS)
     out = Image.new("RGB", (OW, OH))
     out.paste(img, ((OW - img.width) // 2, (OH - img.height) // 2))
-    return out
+    return out, {"cx": OW / 2, "cy": OH / 2, "f": (img.width / 2) / math.tan(math.radians(hf) / 2), "heading": meta["ang"]}
+
+
+def align_frame(data, meta, align=True):
+    """JPEG/PNG bytes + candidate meta (ang, hd, pano, cam) -> 1280x720 RGB image."""
+    return align_frame_view(data, meta, align)[0]
 
 
 # ---------- direction cues drawn onto the frame ----------
@@ -185,4 +195,86 @@ def draw_cue(img, cue):
            stroke_fill=(255, 255, 255, 255))
     if l2:
         d.text((x + 110, y + 80), l2, font=f2, fill=(214, 219, 227, 255), anchor="lm")
+    img.paste(Image.alpha_composite(img.convert("RGBA"), layer).convert("RGB"))
+
+
+# ---------- marking the road to take: the route ahead, projected onto the frame ----------
+CAM_H, LANE_HALF_W = 1.6, 1.3
+
+
+def _bearing(a, b):
+    p1, p2 = math.radians(a[0]), math.radians(b[0])
+    dl = math.radians(b[1] - a[1])
+    y = math.sin(dl) * math.cos(p2)
+    x = math.cos(p1) * math.sin(p2) - math.sin(p1) * math.cos(p2) * math.cos(dl)
+    return (math.degrees(math.atan2(y, x)) + 360) % 360
+
+
+def _dist(a, b):
+    dp, dl = math.radians(b[0] - a[0]), math.radians(b[1] - a[1])
+    h = math.sin(dp / 2) ** 2 + math.cos(math.radians(a[0])) * math.cos(math.radians(b[0])) * math.sin(dl / 2) ** 2
+    return 2 * 6371000.0 * math.asin(math.sqrt(h))
+
+
+def guide_shape(view, lat, lon, ahead):
+    """Ground-plane projection (level pinhole camera CAM_H above the road) of a ribbon along `ahead`
+    [(lat, lon)...]. Returns {"L", "R", "C"} pixel lists, or None if too little of it is visible."""
+    g = []
+    for p in ahead:
+        d = _dist((lat, lon), p)
+        rel = math.radians(signed_diff(_bearing((lat, lon), p), view["heading"]))
+        X, Z = d * math.sin(rel), d * math.cos(rel)
+        if Z >= 3:
+            g.append((X, Z))
+    if len(g) < 2:
+        return None
+
+    def proj(X, Z):
+        return (view["cx"] + view["f"] * X / Z, view["cy"] + view["f"] * CAM_H / Z)
+
+    L, R, C = [], [], []
+    for i, (X, Z) in enumerate(g):
+        a, b = g[max(0, i - 3)], g[min(len(g) - 1, i + 3)]   # wide window: no kink at a fork
+        dx, dz = b[0] - a[0], b[1] - a[1]
+        n = math.hypot(dx, dz) or 1.0
+        dx, dz = dx / n, dz / n
+        nx, nz = -dz * LANE_HALF_W, dx * LANE_HALF_W            # left-hand normal on the ground
+        if Z - nz < 1 or Z + nz < 1:
+            continue
+        c = proj(X, Z)
+        if c[0] < OW * 0.04 or c[0] > OW * 0.96:                # stop where the path leaves the frame
+            break
+        L.append(proj(X + nx, Z + nz))
+        R.append(proj(X - nx, Z - nz))
+        C.append(c)
+    return {"L": L, "R": R, "C": C} if len(C) >= 2 else None
+
+
+def draw_guide(img, view, lat, lon, ahead):
+    """Translucent green path with an arrow head and a 'this way' tag on top of the frame (in place)."""
+    sh = guide_shape(view, lat, lon, ahead)
+    if not sh:
+        return
+    layer = Image.new("RGBA", img.size, (0, 0, 0, 0))
+    d = ImageDraw.Draw(layer)
+    poly = sh["L"] + sh["R"][::-1]
+    d.polygon(poly, fill=(34, 197, 94, 128))
+    d.line(poly + [poly[0]], fill=(255, 255, 255, 230), width=3, joint="curve")
+    n = len(sh["C"])
+    tx, ty = sh["C"][-1]
+    px, py = sh["C"][max(0, n - 4)]
+    ang = math.atan2(ty - py, tx - px)
+    wid = min(48.0, max(16.0, math.hypot(sh["L"][-1][0] - sh["R"][-1][0], sh["L"][-1][1] - sh["R"][-1][1]) * 1.6))
+    tri = [(wid * 1.2, 0), (-wid * 0.3, -wid * 0.8), (-wid * 0.3, wid * 0.8)]
+    tri = [(tx + x * math.cos(ang) - y * math.sin(ang), ty + x * math.sin(ang) + y * math.cos(ang)) for x, y in tri]
+    d.polygon(tri, fill=(22, 163, 74, 255))
+    d.line(tri + [tri[0]], fill=(255, 255, 255, 255), width=3, joint="curve")
+    path = find_cjk_font()
+    label = "走這條" if path else "This way"
+    font = _font(path, 30)
+    w = d.textlength(label, font=font) + 28
+    lx = min(OW - w - 10, max(10, tx - w / 2))
+    ly = min(OH - 60, max(150, ty - 70))
+    d.rounded_rectangle([lx, ly, lx + w, ly + 46], radius=23, fill=(22, 163, 74, 255), outline=(255, 255, 255, 255), width=3)
+    d.text((lx + 14, ly + 24), label, font=font, fill=(255, 255, 255, 255), anchor="lm")
     img.paste(Image.alpha_composite(img.convert("RGBA"), layer).convert("RGB"))

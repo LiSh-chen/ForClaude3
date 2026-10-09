@@ -1,3 +1,4 @@
+import math
 import sys
 from pathlib import Path
 
@@ -206,6 +207,64 @@ def test_draw_cue_only_touches_the_banner(monkeypatch, font):
     box = ImageChops.difference(base, img).getbbox()
     assert box and box[1] >= 20 and box[3] <= 160                      # drawn near the top
     assert 300 < box[0] and box[2] < 980                               # and centred
+
+
+def _ground(points):
+    """[(east_m, north_m)] -> [(lat, lon)] around (25, 121)."""
+    return [(25.0 + z / 111320.0, 121.0 + x / (111320.0 * math.cos(math.radians(25)))) for x, z in points]
+
+
+def test_hold_lands_25m_before_each_decision_point():
+    pts = core.resample([(25.0, 121.0), (25.0045, 121.0), (25.009, 121.0)], 10)
+    man = [{"pt": pts[50][0], "sev": 1.0}]
+    extra = core.hold_extra(pts, man, 10, 1.5, 4)
+    assert sum(extra) == pytest.approx(6.0) and sum(1 for e in extra if e) == 1     # 1.5 s at 4 images/s
+    hit = next(i for i, e in enumerate(extra) if e)
+    assert 46 <= hit <= 48                                                          # 20-30 m before the junction
+    assert core.hold_extra(pts, man, 10, 0, 4) == [0.0] * len(pts)
+    base = core.pace_durations(pts, man, 10, 3)
+    held = core.pace_durations(pts, man, 10, 3, hold=1.5, fps=4)
+    assert sum(held) - sum(base) == pytest.approx(6.0)
+
+
+def test_route_ahead_takes_next_45m_from_nearest_point():
+    fine = [p for p, _ in core.resample(_ground([(0, 0), (0, 200)]), 2)]
+    ahead = core.route_ahead(fine, _ground([(1, 50)])[0])
+    assert 22 <= len(ahead) <= 25
+    assert core.haversine(ahead[0], _ground([(0, 50)])[0]) < 2
+    assert core.haversine(ahead[0], ahead[-1]) == pytest.approx(45, abs=3)
+
+
+def test_guide_shape_follows_the_branch_and_ignores_what_is_behind():
+    view = {"cx": 640, "cy": 360, "f": 900, "heading": 0}
+    straight = align.guide_shape(view, 25.0, 121.0, _ground([(0, z) for z in range(0, 46, 2)]))
+    assert straight["C"][-1][0] == pytest.approx(640, abs=1)                       # dead ahead stays centred
+    assert straight["C"][-1][1] > 360                                                # and below the horizon
+    right = align.guide_shape(view, 25.0, 121.0, _ground([(0 if z < 15 else (z - 15) * 0.35, z) for z in range(0, 46, 2)]))
+    assert right["C"][-1][0] > 800                                                   # bends towards the right-hand branch
+    left = align.guide_shape(view, 25.0, 121.0, _ground([(0 if z < 15 else -(z - 15) * 0.35, z) for z in range(0, 46, 2)]))
+    assert left["C"][-1][0] < 480
+    assert align.guide_shape({**view, "heading": 180}, 25.0, 121.0, _ground([(0, z) for z in range(0, 46, 2)])) is None
+
+
+def test_view_follows_the_alignment_shift():
+    from PIL import Image
+    meta = {"ang": 0.0, "hd": 3.0, "pano": False, "cam": [0.8, 0, 0]}
+    img, view = align.align_frame_view(_jpeg(Image.new("RGB", (1600, 1200))), meta, True)
+    assert img.size == (1280, 720) and view["heading"] == 0.0
+    assert 560 < view["cx"] < 585                                                    # optical axis moved left of centre
+    _, pano = align.align_frame_view(_jpeg(Image.new("RGB", (1024, 512))), {"ang": 0.0, "hd": 90.0, "pano": True, "cam": None})
+    assert pano["heading"] == 90.0 and pano["cx"] == 640
+
+
+def test_draw_guide_paints_a_path_below_the_horizon():
+    from PIL import Image, ImageChops
+    view = {"cx": 640, "cy": 360, "f": 900, "heading": 0}
+    base = Image.new("RGB", (1280, 720), (120, 120, 120))
+    img = base.copy()
+    align.draw_guide(img, view, 25.0, 121.0, _ground([(0 if z < 15 else (z - 15) * 0.35, z) for z in range(0, 46, 2)]))
+    box = ImageChops.difference(base, img).getbbox()
+    assert box and box[3] > 600 and box[1] > 150                                     # green path starts at the bottom edge
 
 
 @pytest.fixture

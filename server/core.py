@@ -151,7 +151,7 @@ def candidates_for(images, pt, heading, max_angle, allow_pano=False, align=True,
         lon, lat = geom["coordinates"]
         d = haversine(pt, (lat, lon))
         out.append({
-            "id": im["id"], "seq": im.get("sequence"), "t": im.get("captured_at") or 0,
+            "id": im["id"], "lat": lat, "lon": lon, "seq": im.get("sequence"), "t": im.get("captured_at") or 0,
             "ang": None if pano else ang, "pano": pano, "cam": im.get("camera_parameters"),
             "url": url, "hd": heading, "u": d + diff * (0.2 if align else 0.5),
         })
@@ -276,9 +276,38 @@ def cues_for(pts, maneuvers, step):
     return out
 
 
-def pace_durations(pts, maneuvers, step, slow):
-    """Screen time per sample point in units of 1/fps: 1 on open road, up to `slow` at a decision point."""
-    return [1 + (slow - 1) * w for w in pace_weights(pts, maneuvers, step)]
+HOLD_LEAD_M, GUIDE_FROM_M, GUIDE_TO_M, GUIDE_LEN_M = 25.0, 10, 60, 45.0
+
+
+def hold_extra(pts, maneuvers, step, hold_sec, fps):
+    """Extra screen time (in 1/fps units) on the sample ~25 m before each decision point, where the fork is plainly visible."""
+    extra = [0.0] * len(pts)
+    if hold_sec <= 0:
+        return extra
+    s, at = locate_maneuvers(pts, maneuvers, step)
+    for _, bi in at:
+        best = min(range(bi + 1), key=lambda i: abs(s[bi] - s[i] - HOLD_LEAD_M))
+        extra[best] += hold_sec * fps
+    return extra
+
+
+def pace_durations(pts, maneuvers, step, slow, hold=0.0, fps=4.0):
+    """Screen time per sample point in units of 1/fps: 1 on open road, up to `slow` at a decision point,
+    plus a short hold (`hold` seconds) just before each one."""
+    extra = hold_extra(pts, maneuvers, step, hold, fps)
+    return [1 + (slow - 1) * w + e for w, e in zip(pace_weights(pts, maneuvers, step), extra)]
+
+
+def route_ahead(fine, cam, length_m=GUIDE_LEN_M):
+    """The next `length_m` of the fine route polyline [(lat, lon)] from the point nearest the camera."""
+    bi = min(range(len(fine)), key=lambda i: haversine(cam, fine[i]))
+    out, acc = [fine[bi]], 0.0
+    for i in range(bi + 1, len(fine)):
+        if acc >= length_m:
+            break
+        acc += haversine(fine[i - 1], fine[i])
+        out.append(fine[i])
+    return out
 
 
 def build_timeline(picks, durs, cues=None):
@@ -395,6 +424,8 @@ def build_video(
     max_angle=60.0,
     fps=4.0,
     slow=3.0,
+    hold=1.5,
+    guide=True,
     cues=True,
     allow_pano=False,
     max_frames=0,
@@ -438,11 +469,16 @@ def build_video(
         time.sleep(delay)
         report("search", i + 1, len(pts))
     picks = choose_path(cands)
-    chosen, gaps = build_timeline(picks, pace_durations(pts, maneuvers, step, slow), cues_for(pts, maneuvers, step))
+    chosen, gaps = build_timeline(picks, pace_durations(pts, maneuvers, step, slow, hold, fps), cues_for(pts, maneuvers, step))
     if len(chosen) < 2:
         raise PipelineError(
             "Too few images along this route. Try a larger search radius / angle, or a better-covered road."
         )
+    if guide:   # frames shortly before a decision point get the route ahead drawn on them
+        fine = [p for p, _ in resample(path, 2)]
+        for c in chosen:
+            if c.get("cue") and GUIDE_FROM_M <= c["cue"]["dist"] <= GUIDE_TO_M:
+                c["guide"] = route_ahead(fine, (c["lat"], c["lon"]))
     sequences = len({c["seq"] or c["id"] for c in chosen})
 
     # 2. download each image and align it to the route direction
@@ -458,7 +494,9 @@ def build_video(
                 carry += c["dur"]
         else:
             f = work / f"{len(files) + 1:05d}.jpg"
-            img = aligner.align_frame(data, c, align)
+            img, view = aligner.align_frame_view(data, c, align)
+            if guide and c.get("guide"):
+                aligner.draw_guide(img, view, c["lat"], c["lon"], c["guide"])
             if cues and c.get("cue"):
                 aligner.draw_cue(img, c["cue"])
             img.save(f, quality=92)

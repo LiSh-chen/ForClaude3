@@ -7,6 +7,8 @@ from pathlib import Path
 
 import requests
 
+import align as aligner
+
 OSRM = "https://routing.openstreetmap.de/{}/route/v1/driving"
 ROUTERS = {"driving": "routed-car", "cycling": "routed-bike", "walking": "routed-foot"}
 GRAPH = "https://graph.mapillary.com/images"
@@ -104,7 +106,10 @@ def nearby_images(token, pt, radius):
     dlon = radius / (111320.0 * max(math.cos(math.radians(pt[0])), 0.01))
     params = {
         "access_token": token,
-        "fields": "id,computed_geometry,computed_compass_angle,thumb_2048_url,is_pano",
+        "fields": (
+            "id,computed_geometry,computed_compass_angle,thumb_1024_url,thumb_2048_url,"
+            "is_pano,sequence,captured_at,camera_parameters"
+        ),
         "bbox": f"{pt[1]-dlon},{pt[0]-dlat},{pt[1]+dlon},{pt[0]+dlat}",
         "limit": 100,
     }
@@ -122,34 +127,87 @@ def nearby_images(token, pt, radius):
     return []
 
 
-def pick_best(images, pt, heading, max_angle, allow_pano=False):
-    best, best_score = None, None
+def smooth_headings(pts, step, window_m=25.0):
+    """Road heading averaged over +-window_m so it does not jerk at polyline vertices."""
+    k, n = max(1, round(window_m / step)), len(pts)
+    return [(p, bearing(pts[max(0, i - k)][0], pts[min(n - 1, i + k)][0])) for i, (p, _) in enumerate(pts)]
+
+
+def candidates_for(images, pt, heading, max_angle, allow_pano=False, align=True, k=6):
+    """Candidate images near one sample point, cheapest first."""
+    out = []
     for im in images:
-        if im.get("is_pano") and not allow_pano:
+        geom, ang, pano = im.get("computed_geometry"), im.get("computed_compass_angle"), bool(im.get("is_pano"))
+        if not geom or (pano and not allow_pano):
             continue
-        geom, ang = im.get("computed_geometry"), im.get("computed_compass_angle")
-        if not geom or ang is None or not im.get("thumb_2048_url"):
+        url = im.get("thumb_2048_url") if pano else (im.get("thumb_2048_url") or im.get("thumb_1024_url"))
+        if not url or (not pano and ang is None):
             continue
-        lon, lat = geom["coordinates"]
-        diff = angle_diff(ang, heading)
+        diff = 0.0 if pano else angle_diff(ang, heading)
         if diff > max_angle:
             continue
-        score = haversine(pt, (lat, lon)) + diff * 0.3
-        if best_score is None or score < best_score:
-            best, best_score = im, score
-    return best
+        lon, lat = geom["coordinates"]
+        d = haversine(pt, (lat, lon))
+        out.append({
+            "id": im["id"], "seq": im.get("sequence"), "t": im.get("captured_at") or 0,
+            "ang": None if pano else ang, "pano": pano, "cam": im.get("camera_parameters"),
+            "url": url, "hd": heading, "u": d + diff * (0.2 if align else 0.5),
+        })
+    out.sort(key=lambda c: c["u"])
+    return out[:k]
 
 
-def download(url, dest):
+def trans_cost(a, b):
+    """Cost of going from one chosen image to the next: staying in a sequence is cheap, while
+    hopping to another sequence / date / direction (where the road shifts in the frame) is not."""
+    if a["id"] == b["id"]:
+        return 4.0
+    c = 0.0
+    if a["seq"] and a["seq"] == b["seq"]:
+        if b["t"] < a["t"]:
+            c += 15
+    else:
+        c += 25 + min(15.0, math.log10(1 + abs(a["t"] - b["t"]) / 864e5) * 5)
+        if a["ang"] is not None and b["ang"] is not None:
+            c += 0.3 * angle_diff(a["ang"], b["ang"])
+    if a["pano"] != b["pano"]:
+        c += 20
+    return c
+
+
+def choose_path(cands):
+    """Viterbi over all sample points: one best chain of images (None where nothing is available)."""
+    idx = [i for i, c in enumerate(cands) if c]
+    picks = [None] * len(cands)
+    if not idx:
+        return picks
+    layers, prev = [], None
+    for i in idx:
+        cur = [{"c": c, "cost": c["u"], "from": -1} for c in cands[i]]
+        if prev:
+            for n in cur:
+                costs = [q["cost"] + trans_cost(q["c"], n["c"]) for q in prev]
+                j = min(range(len(prev)), key=costs.__getitem__)
+                n["cost"] += costs[j]
+                n["from"] = j
+        layers.append(cur)
+        prev = cur
+    j = min(range(len(prev)), key=lambda k: prev[k]["cost"])
+    for k in range(len(layers) - 1, -1, -1):
+        picks[idx[k]] = layers[k][j]["c"]
+        j = layers[k][j]["from"]
+    return picks
+
+
+def fetch_bytes(url):
     for attempt in range(4):
         try:
             r = requests.get(url, timeout=30)
             r.raise_for_status()
-            dest.write_bytes(r.content)
-            return True
+            return r.content
         except requests.RequestException:
             time.sleep(2 ** attempt)
-    return False
+    return None
 
 
 def build_video(
@@ -168,6 +226,7 @@ def build_video(
     max_frames=0,
     delay=0.1,
     smooth=False,
+    align=True,
     progress=None,
     cancelled=None,
 ):
@@ -186,7 +245,7 @@ def build_video(
 
     report("route")
     path, dist = get_route(start, end, profile)
-    pts = resample(path, step)
+    pts = smooth_headings(resample(path, step), step)
     if max_frames:
         pts = pts[:max_frames]
     if len(pts) < 2:
@@ -197,32 +256,45 @@ def build_video(
     for old in work.glob("*.jpg"):
         old.unlink()
 
-    n, gaps, last_id = 0, 0, None
+    # 1. candidates near every sample point, then one consistent chain of images
+    cands = []
     for i, (pt, hd) in enumerate(pts):
         check()
-        im = pick_best(nearby_images(token, pt, radius), pt, hd, max_angle, allow_pano)
+        cands.append(candidates_for(nearby_images(token, pt, radius), pt, hd, max_angle, allow_pano, align))
         time.sleep(delay)
-        if im is None:
+        report("search", i + 1, len(pts))
+    picks = choose_path(cands)
+    chosen, last_id, gaps = [], None, 0
+    for c in picks:
+        if c is None:
             gaps += 1
-        elif im["id"] != last_id:
-            n += 1
-            if download(im["thumb_2048_url"], work / f"{n:05d}.jpg"):
-                last_id = im["id"]
-            else:
-                n -= 1
-                gaps += 1
-        report("frames", i + 1, len(pts), f"{n} frames, {gaps} gaps")
-
-    if n < 2:
+        elif c["id"] != last_id:
+            chosen.append(c)
+            last_id = c["id"]
+    if len(chosen) < 2:
         raise PipelineError(
             "Too few images along this route. Try a larger search radius / angle, or a better-covered road."
         )
+    sequences = len({c["seq"] or c["id"] for c in chosen})
+
+    # 2. download each image and align it to the route direction
+    n = 0
+    for i, c in enumerate(chosen):
+        check()
+        data = fetch_bytes(c["url"])
+        if data is None:
+            gaps += 1
+        else:
+            n += 1
+            aligner.align_frame(data, c, align).save(work / f"{n:05d}.jpg", quality=92)
+        report("frames", i + 1, len(chosen), f"{n} frames, {gaps} gaps")
+
+    if n < 2:
+        raise PipelineError("Image download failed; check the network connection.")
 
     check()
     report("encode", 0, 0, f"{n} frames")
-    vf = "scale=1280:720:force_original_aspect_ratio=decrease,pad=1280:720:(ow-iw)/2:(oh-ih)/2"
-    if smooth:
-        vf += f",minterpolate=fps={fps*2}:mi_mode=blend"
+    vf = f"minterpolate=fps={fps*2}:mi_mode=blend" if smooth else "null"
     cmd = [
         "ffmpeg", "-y", "-loglevel", "error", "-framerate", str(fps),
         "-i", str(work / "%05d.jpg"), "-vf", vf,
@@ -232,4 +304,4 @@ def build_video(
     if res.returncode != 0:
         raise PipelineError(f"ffmpeg failed: {res.stderr[-300:]}")
     shutil.rmtree(work, ignore_errors=True)
-    return {"frames": n, "gaps": gaps, "distance_m": round(dist), "points": len(pts)}
+    return {"frames": n, "gaps": gaps, "distance_m": round(dist), "points": len(pts), "sequences": sequences}

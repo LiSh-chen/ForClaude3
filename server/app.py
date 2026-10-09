@@ -136,6 +136,7 @@ def create_job():
             max_frames=_num(b, "max_frames", 0, 0, MAX_FRAMES_LIMIT, int),
             allow_pano=bool(b.get("allow_pano")),
             smooth=bool(b.get("smooth")),
+            align=bool(b.get("align", True)),
         )
     except ValueError as e:
         return jsonify(error=str(e)), 400

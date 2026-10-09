@@ -74,7 +74,8 @@
     <label>每秒幾張影像</label><input type="number" id="fps" value="8" min="1" max="30">
     <label>最多影像張數（試跑可填 40）</label><input type="number" id="maxFrames" value="600" min="2" max="3000">
     <div class="check"><input type="checkbox" id="fade" checked><span>影像間漸變（較順）</span></div>
-    <div class="check"><input type="checkbox" id="pano"><span>允許 360° 全景圖（可能變形）</span></div>
+    <div class="check"><input type="checkbox" id="align" checked><span>路線對齊：讓道路方向固定在畫面中央（建議）</span></div>
+    <div class="check"><input type="checkbox" id="pano"><span>使用 360° 全景圖並轉正（可對準任何方向，但解析度較低）</span></div>
   </details>
 
   <button class="primary" id="go" disabled>產生影片</button>
@@ -126,18 +127,114 @@ function resample(path, step) {
   }
   return out;
 }
-function pickBest(images, pt, hd, maxAngle, allowPano) {
-  let best = null, bestScore = Infinity;
+/* Heading of the road at each sample, averaged over +-windowM so it does not jerk at polyline vertices. */
+function smoothHeadings(pts, step, windowM) {
+  const k = Math.max(1, Math.round(windowM / step)), n = pts.length;
+  return pts.map((p, i) => ({ pt:p.pt, hd:bearing(pts[Math.max(0, i-k)].pt, pts[Math.min(n-1, i+k)].pt) }));
+}
+const signedDiff = (a, b) => ((a - b + 540) % 360) - 180;   // a-b in (-180,180]
+
+/* Candidate images near one sample point, cheapest first. */
+function candidatesFor(images, pt, hd, o, K = 6) {
+  const out = [];
   for (const im of images) {
-    if (im.is_pano && !allowPano) continue;
-    const g = im.computed_geometry, ang = im.computed_compass_angle;
-    if (!g || ang == null || !im.thumb_1024_url) continue;
-    const diff = angDiff(ang, hd);
-    if (diff > maxAngle) continue;
-    const score = dist(pt, [g.coordinates[1], g.coordinates[0]]) + diff * 0.3;
-    if (score < bestScore) { best = im; bestScore = score; }
+    const g = im.computed_geometry, ang = im.computed_compass_angle, pano = !!im.is_pano;
+    if (!g || (pano && !o.pano)) continue;
+    const url = pano ? im.thumb_2048_url : im.thumb_1024_url;
+    if (!url || (!pano && ang == null)) continue;
+    const diff = pano ? 0 : angDiff(ang, hd);
+    if (diff > o.maxAngle) continue;
+    const d = dist(pt, [g.coordinates[1], g.coordinates[0]]);
+    out.push({ id:im.id, seq:im.sequence || null, t:im.captured_at || 0, ang:pano ? null : ang, pano,
+               cam:im.camera_parameters || null, url, hd, u:d + diff * (o.align ? 0.2 : 0.5) });
   }
-  return best;
+  return out.sort((x, y) => x.u - y.u).slice(0, K);
+}
+/* Cost of going from one chosen image to the next: staying in the same sequence is cheap,
+   hopping to another sequence / camera / date (where the road shifts in the frame) is expensive. */
+function transCost(a, b) {
+  if (a.id === b.id) return 4;
+  let c = 0;
+  if (a.seq && a.seq === b.seq) { if (b.t < a.t) c += 15; }
+  else {
+    c += 25 + Math.min(15, Math.log10(1 + Math.abs(a.t - b.t) / 864e5) * 5);
+    if (a.ang != null && b.ang != null) c += 0.3 * angDiff(a.ang, b.ang);
+  }
+  if (a.pano !== b.pano) c += 20;
+  return c;
+}
+/* Viterbi over all sample points: the single best chain of images (null where nothing is available). */
+function choosePath(cands) {
+  const idx = cands.map((c, i) => c.length ? i : -1).filter(i => i >= 0);
+  const picks = new Array(cands.length).fill(null);
+  if (!idx.length) return picks;
+  const layers = []; let prev = null;
+  for (const i of idx) {
+    const cur = cands[i].map(c => ({ c, cost:c.u, from:-1 }));
+    if (prev) for (const n of cur) {
+      let best = Infinity, bj = -1;
+      prev.forEach((q, j) => { const v = q.cost + transCost(q.c, n.c); if (v < best) { best = v; bj = j; } });
+      n.cost += best; n.from = bj;
+    }
+    layers.push(cur); prev = cur;
+  }
+  let j = prev.reduce((m, n, k) => n.cost < prev[m].cost ? k : m, 0);
+  for (let k = layers.length - 1; k >= 0; k--) { picks[idx[k]] = layers[k][j].c; j = layers[k][j].from; }
+  return picks;
+}
+
+/* ---------- frame alignment: keep the road direction in the middle of every frame ---------- */
+const OW = 1280, OH = 720;
+let PANO_GRID = null;
+function panoGrid(hfov) {
+  if (PANO_GRID && PANO_GRID.hfov === hfov) return PANO_GRID;
+  const dlon = new Float32Array(OW * OH), lat = new Float32Array(OW * OH), f = (OW / 2) / Math.tan(rad(hfov) / 2);
+  for (let y = 0, i = 0; y < OH; y++) for (let x = 0; x < OW; x++, i++) {
+    const X = x + .5 - OW / 2, Y = OH / 2 - (y + .5);
+    dlon[i] = deg(Math.atan2(X, f)); lat[i] = Math.atan2(Y, Math.hypot(X, f));
+  }
+  return PANO_GRID = { hfov, dlon, lat };
+}
+/* Render a perspective view out of an equirectangular panorama, looking along yawRel degrees from its centre. */
+function reprojectPano(ctx, bmp, yawRel, hfov = 80) {
+  const sw = bmp.width, sh = bmp.height, tmp = document.createElement('canvas');
+  tmp.width = sw; tmp.height = sh; const tc = tmp.getContext('2d'); tc.drawImage(bmp, 0, 0);
+  const src = tc.getImageData(0, 0, sw, sh).data, out = ctx.createImageData(OW, OH), dst = out.data;
+  const { dlon, lat } = panoGrid(hfov);
+  for (let i = 0, o4 = 0; i < OW * OH; i++, o4 += 4) {
+    let u = (dlon[i] + yawRel) / 360 + .5; u -= Math.floor(u);
+    const fx = u * sw - .5, fy = Math.min(Math.max((.5 - lat[i] / Math.PI) * sh - .5, 0), sh - 1.001);
+    const x0 = Math.floor(fx), y0 = Math.floor(fy), tx = fx - x0, ty = fy - y0;
+    const xa = ((x0 % sw) + sw) % sw, xb = (xa + 1) % sw;
+    const p00 = (y0 * sw + xa) * 4, p10 = (y0 * sw + xb) * 4, p01 = ((y0 + 1) * sw + xa) * 4, p11 = ((y0 + 1) * sw + xb) * 4;
+    for (let c = 0; c < 3; c++)
+      dst[o4 + c] = (src[p00 + c] * (1 - tx) + src[p10 + c] * tx) * (1 - ty) + (src[p01 + c] * (1 - tx) + src[p11 + c] * tx) * ty;
+    dst[o4 + 3] = 255;
+  }
+  ctx.putImageData(out, 0, 0);
+}
+/* Horizontal field of view in degrees, from Mapillary's normalised focal length when known. */
+function hfovOf(meta, iw, ih) {
+  const f = meta.cam && meta.cam[0];
+  return f > 0 ? deg(2 * Math.atan(0.5 * (iw / Math.max(iw, ih)) / f)) : 70;
+}
+/* Turn one downloaded image into a 1280x720 JPEG whose centre points along the route. */
+async function alignFrame(blob, meta, o) {
+  const cv = document.createElement('canvas'); cv.width = OW; cv.height = OH;
+  const ctx = cv.getContext('2d'); ctx.fillStyle = '#000'; ctx.fillRect(0, 0, OW, OH);
+  const bmp = await createImageBitmap(blob);
+  if (meta.pano) reprojectPano(ctx, bmp, signedDiff(meta.hd, meta.ang ?? 0));
+  else if (o.align) {
+    const s = Math.max(OW / bmp.width, OH / bmp.height) * 1.12, w = bmp.width * s, h = bmp.height * s;
+    const ppd = w / hfovOf(meta, bmp.width, bmp.height), margin = (w - OW) / 2;
+    const dx = Math.max(-margin, Math.min(margin, -signedDiff(meta.hd, meta.ang) * ppd));  // yaw error -> pixel shift
+    ctx.drawImage(bmp, (OW - w) / 2 + dx, (OH - h) / 2, w, h);
+  } else {
+    const s = Math.min(OW / bmp.width, OH / bmp.height), w = bmp.width * s, h = bmp.height * s;
+    ctx.drawImage(bmp, (OW - w) / 2, (OH - h) / 2, w, h);
+  }
+  bmp.close();
+  return new Promise(r => cv.toBlob(r, 'image/jpeg', 0.9));
 }
 
 /* ---------- map ---------- */
@@ -269,7 +366,7 @@ async function fetchJSON(url, tries = 4) {
 async function nearby(token, pt, radius) {
   const dlat = radius / 111320, dlon = radius / (111320 * Math.max(Math.cos(rad(pt[0])), .01));
   const bbox = [pt[1]-dlon, pt[0]-dlat, pt[1]+dlon, pt[0]+dlat].join(',');
-  const f = 'id,computed_geometry,computed_compass_angle,thumb_1024_url,is_pano';
+  const f = 'id,computed_geometry,computed_compass_angle,thumb_1024_url,thumb_2048_url,is_pano,sequence,captured_at,camera_parameters';
   const d = await fetchJSON(`https://graph.mapillary.com/images?access_token=${encodeURIComponent(token)}&fields=${f}&bbox=${bbox}&limit=100`);
   return d ? d.data || [] : [];
 }
@@ -288,36 +385,45 @@ async function generate() {
   if (!S.routes.length) return fail('請先選好起點、終點與路線');
   if ($('remember').checked) store.set('mly_token', token); else store.del('mly_token');
   const o = { step:+$('step').value, radius:+$('radius').value, maxAngle:+$('maxAngle').value, fps:+$('fps').value,
-              maxFrames:+$('maxFrames').value, fade:$('fade').checked, pano:$('pano').checked };
+              maxFrames:+$('maxFrames').value, fade:$('fade').checked, pano:$('pano').checked, align:$('align').checked };
   $('err').textContent = ''; $('result').replaceChildren();
   S.busy = true; S.cancel = false; $('go').disabled = true; $('stop').hidden = false;
   try {
     // 1. sample + look up imagery
-    let pts = resample(S.routes[S.sel].path, o.step);
+    let pts = smoothHeadings(resample(S.routes[S.sel].path, o.step), o.step, 25);
     if (pts.length > o.maxFrames) {   // keep the whole route, thin it out evenly
       const k = pts.length / o.maxFrames; pts = Array.from({ length:o.maxFrames }, (_, i) => pts[Math.floor(i * k)]);
     }
-    const picks = new Array(pts.length); let done = 0;
+    const cands = new Array(pts.length); let done = 0;
     await pool(pts, 4, async (p, i) => {
-      picks[i] = pickBest(await nearby(token, p.pt, o.radius), p.pt, p.hd, o.maxAngle, o.pano);
-      setStatus(`搜尋街景 ${++done}/${pts.length}`, 30 * done / pts.length);
+      cands[i] = candidatesFor(await nearby(token, p.pt, o.radius), p.pt, p.hd, o);
+      setStatus(`搜尋街景 ${++done}/${pts.length}`, 25 * done / pts.length);
     });
+    const picks = choosePath(cands);   // one consistent chain of images, not the nearest one per point
     const chosen = []; let last = null, gaps = 0;
     for (const im of picks) { if (!im) { gaps++; continue; } if (im.id !== last) { chosen.push(im); last = im.id; } }
     if (chosen.length < 2) throw new Error('這條路線沿途幾乎沒有街景。試試放寬搜尋半徑 / 角度，或換一條路線。');
+    const seqs = new Set(chosen.map(c => c.seq || c.id)).size;
 
     // 2. download images (kept as compressed blobs to save memory)
-    const blobs = new Array(chosen.length); done = 0;
+    const raw = new Array(chosen.length); done = 0;
     await pool(chosen, 6, async (im, i) => {
-      blobs[i] = await fetchBlob(im.thumb_1024_url);
-      setStatus(`下載影像 ${++done}/${chosen.length}`, 30 + 30 * done / chosen.length);
+      raw[i] = await fetchBlob(im.url);
+      setStatus(`下載影像 ${++done}/${chosen.length}`, 25 + 25 * done / chosen.length);
     });
-    const frames = blobs.filter(Boolean);
-    if (frames.length < 2) throw new Error('影像下載失敗（可能是網路或瀏覽器跨網域限制）。');
+    const ok = chosen.map((m, i) => ({ m, b:raw[i] })).filter(x => x.b);
+    if (ok.length < 2) throw new Error('影像下載失敗（可能是網路或瀏覽器跨網域限制）。');
 
-    // 3. render + record
-    const video = await record(frames, o, (i, n) => setStatus(`合成影片 ${i}/${n}（請保持此分頁在前景）`, 60 + 40 * i / n));
-    showResult(video, frames.length, gaps);
+    // 3. align every frame to the route direction
+    const frames = new Array(ok.length); done = 0;
+    await pool(ok, 2, async (x, i) => {
+      frames[i] = await alignFrame(x.b, x.m, o);
+      setStatus(`對齊影像 ${++done}/${ok.length}`, 50 + 20 * done / ok.length);
+    });
+
+    // 4. render + record
+    const video = await record(frames, o, (i, n) => setStatus(`合成影片 ${i}/${n}（請保持此分頁在前景）`, 70 + 30 * i / n));
+    showResult(video, frames.length, gaps, seqs);
   } catch (e) {
     if (e instanceof Cancelled) setStatus('已取消'); else fail(e.message || String(e));
   } finally {
@@ -367,11 +473,11 @@ async function record(frames, o, onProgress) {
   return new Blob(chunks, { type:mime.split(';')[0] });
 }
 
-function showResult(blob, n, gaps) {
+function showResult(blob, n, gaps, seqs) {
   const url = URL.createObjectURL(blob), ext = blob.type === 'video/mp4' ? 'mp4' : 'webm';
   const v = Object.assign(document.createElement('video'), { src:url, controls:true });
   const a = Object.assign(document.createElement('a'), { href:url, download:`route-streetview.${ext}`, className:'dl', textContent:`下載影片（.${ext}，${(blob.size/1048576).toFixed(1)} MB）` });
-  const m = Object.assign(document.createElement('div'), { className:'hint ok', textContent:`完成：${n} 張影像，${gaps} 處沿途沒有街景` });
+  const m = Object.assign(document.createElement('div'), { className:'hint ok', textContent:`完成：${n} 張影像（來自 ${seqs} 段拍攝），${gaps} 處沿途沒有街景` });
   $('result').replaceChildren(m, v, document.createElement('br'), a);
   setStatus('');
 }

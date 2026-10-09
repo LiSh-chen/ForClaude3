@@ -1,4 +1,5 @@
 """Core pipeline: route -> sample points -> Mapillary frames -> mp4."""
+import io
 import math
 import shutil
 import subprocess
@@ -60,14 +61,14 @@ def geocode(query, limit=5):
 
 
 def get_route(start, end, profile="driving"):
-    """Return (polyline [(lat, lon)], distance_m)."""
+    """Return (polyline [(lat, lon)], distance_m, maneuvers)."""
     if profile not in ("driving", "walking", "cycling"):
         raise PipelineError(f"unknown profile: {profile}")
     url = f"{OSRM.format(ROUTERS[profile])}/{start[1]},{start[0]};{end[1]},{end[0]}"
     try:
         r = requests.get(
             url,
-            params={"overview": "full", "geometries": "geojson"},
+            params={"overview": "full", "geometries": "geojson", "steps": "true"},
             headers={"User-Agent": USER_AGENT},
             timeout=30,
         )
@@ -78,7 +79,8 @@ def get_route(start, end, profile="driving"):
     if data.get("code") != "Ok":
         raise PipelineError(f"no route found ({data.get('code')})")
     route = data["routes"][0]
-    return [(lat, lon) for lon, lat in route["geometry"]["coordinates"]], route["distance"]
+    path = [(lat, lon) for lon, lat in route["geometry"]["coordinates"]]
+    return path, route["distance"], maneuvers_of(route)
 
 
 def resample(path, step):
@@ -199,6 +201,71 @@ def choose_path(cands):
     return picks
 
 
+PLAIN_TYPES = {"depart", "arrive", "new name", "continue", "notification"}
+APPROACH_M, AFTER_M = 60.0, 25.0   # how far before / after a decision point the video slows down
+
+
+def maneuvers_of(route):
+    """Decision points (turns, forks, ramps, roundabouts) from the OSRM step list; sev 0..1 = how much to slow."""
+    out = []
+    for leg in route.get("legs", []):
+        for st in leg.get("steps", []):
+            m = st.get("maneuver") or {}
+            typ, mod, loc = m.get("type", ""), m.get("modifier", ""), m.get("location")
+            if not loc or typ in PLAIN_TYPES or (typ == "turn" and mod in ("", "straight")):
+                continue
+            slight = "slight" in mod or any(w in typ for w in ("merge", "ramp", "exit"))
+            out.append({"pt": (loc[1], loc[0]), "sev": 0.6 if slight else 1.0, "type": typ, "mod": mod})
+    return out
+
+
+def pace_weights(pts, maneuvers, step):
+    """0..1 per sample point: how close it is to a decision point or a sharp bend."""
+    n = len(pts)
+    s, w = [0.0], [0.0] * n
+    for i in range(1, n):
+        s.append(s[-1] + haversine(pts[i - 1][0], pts[i][0]))
+    for m in maneuvers:
+        dists = [haversine(p[0], m["pt"]) for p in pts]
+        bi = min(range(n), key=dists.__getitem__)
+        if dists[bi] > max(40.0, step * 2):
+            continue
+        for i in range(n):
+            d = s[i] - s[bi]
+            z, a = (APPROACH_M if d < 0 else AFTER_M), abs(d)
+            if a < z:
+                w[i] = max(w[i], m["sev"] * 0.5 * (1 + math.cos(math.pi * a / z)))
+    k = max(1, round(20 / step))   # bends the router does not call a manoeuvre
+    for i in range(k, n - k):
+        turn = angle_diff(bearing(pts[i - k][0], pts[i][0]), bearing(pts[i][0], pts[i + k][0]))
+        if turn > 25:
+            w[i] = max(w[i], min(1.0, turn / 80))
+    return w
+
+
+def pace_durations(pts, maneuvers, step, slow):
+    """Screen time per sample point in units of 1/fps: 1 on open road, up to `slow` at a decision point."""
+    return [1 + (slow - 1) * w for w in pace_weights(pts, maneuvers, step)]
+
+
+def build_timeline(picks, durs):
+    """Chosen images (consecutive duplicates merged) each with the screen time of the road stretch it covers."""
+    chosen, last, lead, gaps = [], None, 0.0, 0
+    for c, d in zip(picks, durs):
+        if c is None:
+            gaps += 1
+            if chosen:
+                chosen[-1]["dur"] += d
+            else:
+                lead += d
+        elif c["id"] != last:
+            chosen.append({**c, "dur": d + lead})
+            lead, last = 0.0, c["id"]
+        else:
+            chosen[-1]["dur"] += d
+    return chosen, gaps
+
+
 def fetch_bytes(url):
     for attempt in range(4):
         try:
@@ -208,6 +275,76 @@ def fetch_bytes(url):
         except requests.RequestException:
             time.sleep(2 ** attempt)
     return None
+
+
+def frame_at(T, t, i, dissolve=0.3):
+    """Which frame is on screen at time t: (index, blend factor towards the next frame). T[i] = start of frame i."""
+    n = len(T) - 1
+    while i < n - 1 and t >= T[i + 1]:
+        i += 1
+    if i + 1 >= n:
+        return i, 0.0
+    w = min(T[i + 1] - T[i], dissolve)
+    return i, min(1.0, max(0.0, (t - (T[i + 1] - w)) / w))
+
+
+def encode_video(files, durs, fps, smooth, output, check=None, report=None, out_fps=30):
+    """Frames stay on screen for dur/fps seconds (longer at turns). smooth = dissolve between frames."""
+    T = [0.0]
+    for d in durs:
+        T.append(T[-1] + d / fps)
+    tail = ["-c:v", "libx264", "-pix_fmt", "yuv420p", "-movflags", "+faststart", str(output)]
+    if not smooth:
+        lst = Path(files[0]).parent / "frames.txt"
+        lines = []
+        for f, d in zip(files, durs):
+            lines += [f"file '{Path(f).name}'", f"duration {d / fps:.4f}"]
+        lines.append(f"file '{Path(files[-1]).name}'")   # concat quirk: last frame needs repeating
+        lst.write_text("\n".join(lines) + "\n")
+        cmd = ["ffmpeg", "-y", "-loglevel", "error", "-f", "concat", "-safe", "0", "-i", str(lst),
+               "-vf", f"fps={out_fps}", *tail]
+        res = subprocess.run(cmd, capture_output=True, text=True)
+        if res.returncode != 0:
+            raise PipelineError(f"ffmpeg failed: {res.stderr[-300:]}")
+        return T[-1]
+
+    from PIL import Image
+    proc = subprocess.Popen(
+        ["ffmpeg", "-y", "-loglevel", "error", "-f", "image2pipe", "-framerate", str(out_fps),
+         "-c:v", "mjpeg", "-i", "-", *tail],
+        stdin=subprocess.PIPE, stderr=subprocess.PIPE,
+    )
+    cache = {}
+
+    def load(j):
+        if j not in cache:
+            cache[j] = Image.open(files[j]).convert("RGB")
+            for old in [x for x in cache if x < j - 1]:
+                del cache[old]
+        return cache[j]
+
+    try:
+        total, i = math.ceil(T[-1] * out_fps), 0
+        for k in range(total + 1):
+            if check:
+                check()
+            i, a = frame_at(T, k / out_fps, i)
+            im = load(i)
+            if a > 0:
+                im = Image.blend(im, load(i + 1), a)
+            buf = io.BytesIO()
+            im.save(buf, "JPEG", quality=92)
+            proc.stdin.write(buf.getvalue())
+            if report and k % 30 == 0:
+                report("encode", k, total, "")
+        proc.stdin.close()
+        err = proc.stderr.read().decode(errors="replace")
+        if proc.wait() != 0:
+            raise PipelineError(f"ffmpeg failed: {err[-300:]}")
+    except BaseException:
+        proc.kill()
+        raise
+    return T[-1]
 
 
 def build_video(
@@ -221,7 +358,8 @@ def build_video(
     step=10.0,
     radius=25.0,
     max_angle=60.0,
-    fps=12,
+    fps=4.0,
+    slow=3.0,
     allow_pano=False,
     max_frames=0,
     delay=0.1,
@@ -244,7 +382,7 @@ def build_video(
         raise PipelineError("ffmpeg not found on the server")
 
     report("route")
-    path, dist = get_route(start, end, profile)
+    path, dist, maneuvers = get_route(start, end, profile)
     pts = smooth_headings(resample(path, step), step)
     if max_frames:
         pts = pts[:max_frames]
@@ -264,13 +402,7 @@ def build_video(
         time.sleep(delay)
         report("search", i + 1, len(pts))
     picks = choose_path(cands)
-    chosen, last_id, gaps = [], None, 0
-    for c in picks:
-        if c is None:
-            gaps += 1
-        elif c["id"] != last_id:
-            chosen.append(c)
-            last_id = c["id"]
+    chosen, gaps = build_timeline(picks, pace_durations(pts, maneuvers, step, slow))
     if len(chosen) < 2:
         raise PipelineError(
             "Too few images along this route. Try a larger search radius / angle, or a better-covered road."
@@ -278,30 +410,29 @@ def build_video(
     sequences = len({c["seq"] or c["id"] for c in chosen})
 
     # 2. download each image and align it to the route direction
-    n = 0
+    files, durs, carry = [], [], 0.0   # a failed download hands its screen time to its neighbour
     for i, c in enumerate(chosen):
         check()
         data = fetch_bytes(c["url"])
         if data is None:
             gaps += 1
+            if durs:
+                durs[-1] += c["dur"]
+            else:
+                carry += c["dur"]
         else:
-            n += 1
-            aligner.align_frame(data, c, align).save(work / f"{n:05d}.jpg", quality=92)
-        report("frames", i + 1, len(chosen), f"{n} frames, {gaps} gaps")
-
+            f = work / f"{len(files) + 1:05d}.jpg"
+            aligner.align_frame(data, c, align).save(f, quality=92)
+            files.append(f)
+            durs.append(c["dur"] + carry)
+            carry = 0.0
+        report("frames", i + 1, len(chosen), f"{len(files)} frames, {gaps} gaps")
+    n = len(files)
     if n < 2:
         raise PipelineError("Image download failed; check the network connection.")
 
     check()
     report("encode", 0, 0, f"{n} frames")
-    vf = f"minterpolate=fps={fps*2}:mi_mode=blend" if smooth else "null"
-    cmd = [
-        "ffmpeg", "-y", "-loglevel", "error", "-framerate", str(fps),
-        "-i", str(work / "%05d.jpg"), "-vf", vf,
-        "-c:v", "libx264", "-pix_fmt", "yuv420p", "-movflags", "+faststart", str(output),
-    ]
-    res = subprocess.run(cmd, capture_output=True, text=True)
-    if res.returncode != 0:
-        raise PipelineError(f"ffmpeg failed: {res.stderr[-300:]}")
+    seconds = encode_video(files, durs, fps, smooth, output, check, report)
     shutil.rmtree(work, ignore_errors=True)
-    return {"frames": n, "gaps": gaps, "distance_m": round(dist), "points": len(pts), "sequences": sequences}
+    return {"frames": n, "gaps": gaps, "distance_m": round(dist), "points": len(pts), "sequences": sequences, "seconds": round(seconds, 1), "turns": len(maneuvers)}

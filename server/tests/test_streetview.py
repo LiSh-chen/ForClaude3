@@ -95,6 +95,71 @@ def test_pano_reprojection_looks_along_route():
     assert _column(align.align_frame(_jpeg(Image.fromarray(arr)), meta)) < 560
 
 
+def test_maneuvers_skip_plain_steps():
+    route = {"legs": [{"steps": [
+        {"maneuver": {"type": "depart", "location": [121.0, 25.0]}},
+        {"maneuver": {"type": "turn", "modifier": "right", "location": [121.0, 25.001]}},
+        {"maneuver": {"type": "turn", "modifier": "straight", "location": [121.0, 25.002]}},
+        {"maneuver": {"type": "fork", "modifier": "left", "location": [121.0, 25.003]}},
+        {"maneuver": {"type": "off ramp", "modifier": "slight right", "location": [121.0, 25.004]}},
+        {"maneuver": {"type": "arrive", "location": [121.0, 25.005]}}]}]}
+    got = core.maneuvers_of(route)
+    assert [m["type"] for m in got] == ["turn", "fork", "off ramp"]
+    assert [m["sev"] for m in got] == [1.0, 1.0, 0.6]
+
+
+def test_pace_slows_near_turn_only():
+    pts = core.resample([(25.0, 121.0), (25.0045, 121.0), (25.009, 121.0)], 10)
+    mid = len(pts) // 2
+    d = core.pace_durations(pts, [{"pt": pts[mid][0], "sev": 1.0}], 10, 3)
+    assert d[mid] == pytest.approx(3.0, abs=0.01)                      # full slow-down at the decision point
+    assert d[mid - 3] == pytest.approx(2.0, abs=0.01) and d[mid - 5] > 1                            # eases in over ~60 m before it
+    assert d[mid - 6] == 1.0 and d[mid + 3] == 1.0 and d[0] == 1.0       # open road keeps normal pace
+    assert core.pace_durations(pts, [], 10, 3) == [1.0] * len(pts)      # no turns, no slow-down
+    assert core.pace_durations(pts, [{"pt": pts[mid][0], "sev": 1.0}], 10, 1) == [1.0] * len(pts)
+
+
+def test_pace_slows_on_sharp_bend_without_maneuver():
+    pts = core.resample([(25.0, 121.0), (25.001, 121.0), (25.001, 121.001)], 5)
+    assert max(core.pace_durations(pts, [], 5, 3)) > 2
+
+
+def test_timeline_merges_duplicates_and_gaps():
+    c = lambda i: {"id": i, "seq": None, "t": 0, "ang": 0, "pano": False, "u": 0}
+    chosen, gaps = core.build_timeline([None, c("a"), c("a"), None, c("b")], [1, 1, 1, 2, 1])
+    assert gaps == 2
+    assert [(x["id"], x["dur"]) for x in chosen] == [("a", 5), ("b", 1)]   # lead gap + duplicate + trailing gap folded in
+    assert sum(x["dur"] for x in chosen) == 6                            # no screen time is lost
+
+
+def test_frame_at_holds_then_dissolves():
+    T = [0, 1.0, 1.2, 1.4]                                              # frame 0 is a long (slow) one
+    assert core.frame_at(T, 0.2, 0) == (0, 0.0)                         # still holding the first frame
+    i, a = core.frame_at(T, 0.9, 0)
+    assert i == 0 and 0 < a < 1                                         # dissolving into the next
+    assert core.frame_at(T, 1.1, 0)[0] == 1
+
+
+@pytest.mark.parametrize("smooth", [False, True])
+def test_encode_video_length_follows_durations(tmp_path, smooth):
+    import shutil
+    import subprocess
+    from PIL import Image
+    if not shutil.which("ffmpeg"):
+        pytest.skip("ffmpeg missing")
+    files = []
+    for k in range(4):
+        f = tmp_path / f"{k+1:05d}.jpg"
+        Image.new("RGB", (320, 180), (40 * k, 90, 160)).save(f)
+        files.append(f)
+    out = tmp_path / "o.mp4"
+    secs = core.encode_video(files, [1, 1, 3, 1], 2.0, smooth, out)     # 6 units at 2 images/s
+    assert secs == pytest.approx(3.0)
+    r = subprocess.run(["ffprobe", "-v", "error", "-show_entries", "format=duration", "-of", "csv=p=0", str(out)],
+                       capture_output=True, text=True)
+    assert float(r.stdout) == pytest.approx(3.0, abs=0.25)
+
+
 @pytest.fixture
 def client(monkeypatch):
     monkeypatch.delenv("MAPILLARY_TOKEN", raising=False)

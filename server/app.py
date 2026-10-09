@@ -108,12 +108,12 @@ def route_preview():
     try:
         start, end = _coord(b.get("start"), "start"), _coord(b.get("end"), "end")
         step = _num(b, "step", 10, 3, 100)
-        path, dist = core.get_route(start, end, b.get("profile", "driving"))
+        path, dist, mans = core.get_route(start, end, b.get("profile", "driving"))
     except ValueError as e:
         return jsonify(error=str(e)), 400
     except core.PipelineError as e:
         return jsonify(error=str(e)), 502
-    return jsonify(path=path, distance_m=round(dist), est_frames=int(dist // step) + 1)
+    return jsonify(path=path, distance_m=round(dist), est_frames=int(dist // step) + 1, turns=len(mans))
 
 
 @app.post("/api/jobs")
@@ -132,7 +132,8 @@ def create_job():
             step=_num(b, "step", 10, 3, 100),
             radius=_num(b, "radius", 25, 5, 100),
             max_angle=_num(b, "max_angle", 60, 10, 180),
-            fps=_num(b, "fps", 12, 1, 30, int),
+            fps=_num(b, "fps", 4, 0.5, 30),
+            slow=_num(b, "slow", 3, 1, 8),
             max_frames=_num(b, "max_frames", 0, 0, MAX_FRAMES_LIMIT, int),
             allow_pano=bool(b.get("allow_pano")),
             smooth=bool(b.get("smooth")),

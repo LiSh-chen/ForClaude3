@@ -242,7 +242,7 @@ async function alignFrame(blob, meta, o) {
     view = { cx:OW / 2, cy:OH / 2, f:(w / 2) / Math.tan(rad(hfovOf(meta, bmp.width, bmp.height)) / 2), heading:meta.ang };
   }
   bmp.close();
-  if (o.guide && meta.guide) drawGuide(ctx, view, meta.lat, meta.lon, meta.guide);
+  if (o.guide && meta.guide && meta.cue) drawGuide(ctx, view, meta.lat, meta.lon, meta.guide, meta.cue);
   if (o.cues && meta.cue) drawCue(ctx, meta.cue);
   return new Promise(r => cv.toBlob(r, 'image/jpeg', 0.9));
 }
@@ -307,21 +307,27 @@ function cuePhrase(m) {
   if (m.type === 'merge') return side ? `匯入（靠${side}）` : '匯入車道';
   return dir;
 }
-/* One cue (or null) per sample point: the nearest decision point within 80 m ahead / 15 m behind. */
-function cuesFor(pts, maneuvers, step) {
-  const { s, at } = locateManeuvers(pts, maneuvers, step);
-  return pts.map((_, i) => {
-    let best = null;
-    for (const { m, bi } of at) {
-      const d = s[bi] - s[i];
+/* Index of the point of a polyline nearest to p. */
+function nearestIdx(line, p) {
+  let bi = 0, bd = Infinity;
+  for (let i = 0; i < line.length; i++) { const d = dist(line[i], p); if (d < bd) { bd = d; bi = i; } }
+  return bi;
+}
+/* Cue for every chosen image, measured from where the *camera* was (not from the sample point the image was picked for):
+   the nearest decision point within 80 m ahead / 15 m behind along the route. dist is rounded to 10 m, 0 = at the junction. */
+function attachCues(chosen, fine, maneuvers) {
+  const s = [0]; for (let i = 1; i < fine.length; i++) s[i] = s[i-1] + dist(fine[i-1], fine[i]);
+  const ms = maneuvers.map(m => { const bi = nearestIdx(fine, m.pt); return { m, s:s[bi], off:dist(fine[bi], m.pt) }; }).filter(x => x.off <= 40);
+  for (const f of chosen) {
+    const sc = s[nearestIdx(fine, [f.lat, f.lon])]; let best = null;
+    for (const x of ms) {
+      const d = x.s - sc;
       if (d > CUE_AHEAD_M || d < -CUE_AFTER_M) continue;
-      if (!best || Math.abs(d) < Math.abs(best.d)) best = { m, d };
+      if (!best || Math.abs(d) < Math.abs(best.d)) best = { m:x.m, d };
     }
-    if (!best) return null;
-    const { m, d } = best;
-    return { phrase:cuePhrase(m), name:m.name, angle:DIR_ANGLE[m.mod] ?? 0, ring:/roundabout|rotary/.test(m.type),
-             dist:d > CUE_NOW_M ? Math.max(10, Math.round(d / 10) * 10) : 0 };
-  });
+    f.cue = best && { phrase:cuePhrase(best.m), name:best.m.name, angle:DIR_ANGLE[best.m.mod] ?? 0, ring:/roundabout|rotary/.test(best.m.type),
+                      pt:best.m.pt, dist:best.d > CUE_NOW_M ? Math.max(10, Math.round(best.d / 10) * 10) : 0 };
+  }
 }
 /* ---------- marking the road to take: the route ahead, projected onto the street-view frame ---------- */
 const GUIDE_FROM_M = 10, GUIDE_TO_M = 60, GUIDE_LEN_M = 45, CAM_H = 1.6, LANE_HALF_W = 1.3;
@@ -357,8 +363,21 @@ function guideShape(view, lat, lon, ahead) {
   });
   return C.length >= 2 ? { L, R:Rr, C } : null;
 }
-/* Translucent green path with an arrow head and a "走這條" tag on top of the frame. */
-function drawGuide(ctx, view, lat, lon, ahead) {
+/* Where the junction is relative to this frame: 'in' = inside the picture, 'left' / 'right' = ahead but outside the
+   picture, null = too far ahead or already behind the camera (nothing to point at). */
+function junctionState(view, lat, lon, pt) {
+  const d = dist([lat, lon], pt), rel = rad(signedDiff(bearing([lat, lon], pt), view.heading));
+  const X = d * Math.sin(rel), Z = d * Math.cos(rel);
+  if (Z < 3 || Z > 90) return null;
+  const x = view.cx + view.f * X / Z;
+  return x < OW * .06 ? 'left' : x > OW * .94 ? 'right' : 'in';
+}
+/* Marks the way on the frame, but only where the junction is actually in the picture. When it is not (the side road is
+   still out of view), a path would land on pixels without a road, so just point to the side it is on. */
+function drawGuide(ctx, view, lat, lon, ahead, cue) {
+  const state = junctionState(view, lat, lon, cue.pt);
+  if (!state) return;
+  if (state !== 'in') return drawEdgeHint(ctx, state);
   const sh = guideShape(view, lat, lon, ahead); if (!sh) return;
   ctx.save();
   ctx.beginPath(); sh.L.forEach(([x, y], i) => i ? ctx.lineTo(x, y) : ctx.moveTo(x, y));
@@ -377,6 +396,13 @@ function drawGuide(ctx, view, lat, lon, ahead) {
   ctx.fillStyle = '#16a34a'; ctx.beginPath(); ctx.roundRect(lx, ly, w, 46, 23); ctx.fill();
   ctx.lineWidth = 3; ctx.strokeStyle = '#fff'; ctx.stroke();
   ctx.fillStyle = '#fff'; ctx.textBaseline = 'middle'; ctx.textAlign = 'left'; ctx.fillText(label, lx + 14, ly + 24); ctx.textBaseline = 'alphabetic';
+}
+/* "◀ 路口在左側" pill on the edge where the junction lies, for when the road itself is outside the picture. */
+function drawEdgeHint(ctx, side) {
+  const font = 'system-ui,"Noto Sans TC","PingFang TC","Microsoft JhengHei",sans-serif', label = side === 'left' ? '◀ 路口在左側' : '路口在右側 ▶';
+  ctx.font = `bold 30px ${font}`; const w = ctx.measureText(label).width + 32, x = side === 'left' ? 0 : OW - w, y = OH * .5;
+  ctx.fillStyle = 'rgba(245,158,11,.92)'; ctx.beginPath(); ctx.roundRect(x, y, w, 50, 25); ctx.fill();
+  ctx.fillStyle = '#1f2937'; ctx.textBaseline = 'middle'; ctx.textAlign = 'left'; ctx.fillText(label, x + 16, y + 26); ctx.textBaseline = 'alphabetic';
 }
 function drawArrow(ctx, cx, cy, size, angle, ring) {
   ctx.save(); ctx.translate(cx, cy); ctx.fillStyle = ctx.strokeStyle = '#fff';
@@ -580,17 +606,17 @@ async function generate() {
     const picks = choosePath(cands);   // one consistent chain of images, not the nearest one per point
     // each chosen image stands for the stretch of road it covers; its screen time follows the pace weights
     const durs = paceDurations(pts, S.routes[S.sel].maneuvers, o.step, o.slow);
-    const cues = cuesFor(pts, S.routes[S.sel].maneuvers, o.step);
     const chosen = []; let last = null, gaps = 0, lead = 0;
     picks.forEach((im, i) => {
       if (!im) { gaps++; if (chosen.length) chosen[chosen.length-1].dur += durs[i]; else lead += durs[i]; return; }
-      if (im.id !== last) { chosen.push({ ...im, dur:durs[i] + lead, cue:cues[i] }); lead = 0; last = im.id; }
-      else { const f = chosen[chosen.length-1]; f.dur += durs[i]; f.cue = f.cue || cues[i]; }
+      if (im.id !== last) { chosen.push({ ...im, dur:durs[i] + lead }); lead = 0; last = im.id; }
+      else chosen[chosen.length-1].dur += durs[i];
     });
     if (chosen.length < 2) throw new Error('這條路線沿途幾乎沒有街景。試試放寬搜尋半徑 / 角度，或換一條路線。');
-    if (o.guide) {   // frames shortly before a decision point get the route ahead drawn on them
+    if (o.cues || o.guide) {   // cue + path are worked out from where each image was really taken
       const fine = fineRoute(S.routes[S.sel].path);
-      for (const f of chosen) if (f.cue && f.cue.dist >= GUIDE_FROM_M && f.cue.dist <= GUIDE_TO_M) f.guide = routeAhead(fine, [f.lat, f.lon]);
+      attachCues(chosen, fine, S.routes[S.sel].maneuvers);
+      if (o.guide) for (const f of chosen) if (f.cue && f.cue.dist >= GUIDE_FROM_M && f.cue.dist <= GUIDE_TO_M) f.guide = routeAhead(fine, [f.lat, f.lon]);
     }
     const seqs = new Set(chosen.map(c => c.seq || c.id)).size;
 

@@ -161,25 +161,31 @@ def test_encode_video_length_follows_durations(tmp_path, smooth):
     assert float(r.stdout) == pytest.approx(3.0, abs=0.25)
 
 
-def _mans():
-    return [{"pt": (25.0045, 121.0), "sev": 1.0, "type": "turn", "mod": "right", "name": "中山北路二段", "exit": 0}]
+def _fine_route():
+    return [p for p, _ in core.resample(_ground([(0, 0), (0, 200)]), 2)]
 
 
-def test_cues_count_down_then_clear():
-    pts = core.resample([(25.0, 121.0), (25.0045, 121.0), (25.009, 121.0)], 10)
-    mid = 50                                                            # the turn sits at sample 50
-    c = core.cues_for(pts, _mans(), 10)
-    assert c[10] is None                                                # nothing far from the junction
-    assert [c[mid - k]["dist"] for k in (7, 5, 1)] == [70, 50, 10]      # countdown in 10 m steps
-    assert c[mid]["dist"] == 0 and c[mid + 1]["dist"] == 0              # at the junction: instruction only
-    assert c[mid + 2] is None                                           # cleared once past it
-    assert c[mid]["name"] == "中山北路二段"
+def _junction():
+    return [{"type": "turn", "mod": "left", "name": "民權路", "exit": 0, "sev": 1.0, "pt": _ground([(0, 100)])[0]}]
 
 
-def test_timeline_keeps_first_cue_of_a_frame():
-    c = lambda i: {"id": i, "seq": None, "t": 0, "ang": 0, "pano": False, "u": 0}
-    chosen, _ = core.build_timeline([c("a"), c("a"), c("b")], [1, 1, 1], [None, {"dist": 10}, {"dist": 0}])
-    assert [x["cue"] for x in chosen] == [{"dist": 10}, {"dist": 0}]
+def _frames(zs):
+    return [{"lat": _ground([(0, z)])[0][0], "lon": _ground([(0, z)])[0][1]} for z in zs]
+
+
+def test_cues_are_measured_from_the_camera_and_clear_after_the_junction():
+    frames = _frames([10, 30, 50, 95, 100, 112, 120])
+    core.attach_cues(frames, _fine_route(), _junction())
+    got = [f["cue"]["dist"] if f["cue"] else None for f in frames]
+    assert got == [None, 70, 50, 0, 0, 0, None]                          # countdown, "now" around the junction, then cleared
+    assert frames[1]["cue"]["name"] == "民權路" and frames[1]["cue"]["pt"] == _junction()[0]["pt"]
+
+
+def test_cue_distance_follows_where_the_image_was_taken_not_the_sample_point():
+    # picked for a sample 50 m before the junction, but the photo itself was taken 20 m further on
+    frame = _frames([70])
+    core.attach_cues(frame, _fine_route(), _junction())
+    assert frame[0]["cue"]["dist"] == 30
 
 
 def test_cue_text_chinese_and_english():
@@ -244,14 +250,41 @@ def test_view_follows_the_alignment_shift():
     assert pano["heading"] == 90.0 and pano["cx"] == 640
 
 
-def test_draw_guide_paints_a_path_below_the_horizon():
+def test_junction_state():
+    view = {"cx": 640, "cy": 360, "f": 900, "heading": 0}
+    st = lambda x, z: align.junction_state(view, 25.0, 121.0, _ground([(x, z)])[0])
+    assert st(0, 30) == "in" and st(-6, 15) == "in"
+    assert st(-15, 8) == "left" and st(15, 8) == "right"               # beside the camera: outside the picture
+    assert st(0, -10) is None and st(0, 200) is None                   # behind / too far ahead
+
+
+def _guide_cue(x, z):
+    return {"type": "turn", "mod": "left", "name": "", "exit": 0, "dist": 20, "pt": _ground([(x, z)])[0]}
+
+
+def test_draw_guide_paints_a_path_when_the_junction_is_in_the_picture():
     from PIL import Image, ImageChops
     view = {"cx": 640, "cy": 360, "f": 900, "heading": 0}
     base = Image.new("RGB", (1280, 720), (120, 120, 120))
     img = base.copy()
-    align.draw_guide(img, view, 25.0, 121.0, _ground([(0 if z < 15 else (z - 15) * 0.35, z) for z in range(0, 46, 2)]))
+    ahead = _ground([(0 if z < 25 else -(z - 25) * 0.35, z) for z in range(0, 46, 2)])
+    align.draw_guide(img, view, 25.0, 121.0, ahead, _guide_cue(0, 25))
     box = ImageChops.difference(base, img).getbbox()
-    assert box and box[3] > 600 and box[1] > 150                                     # green path starts at the bottom edge
+    assert box and box[3] > 600 and box[1] > 150                       # green path starts at the bottom edge
+
+
+def test_draw_guide_only_points_to_the_side_when_the_junction_is_out_of_view():
+    from PIL import Image, ImageChops
+    view = {"cx": 640, "cy": 360, "f": 900, "heading": 0}
+    base = Image.new("RGB", (1280, 720), (120, 120, 120))
+    ahead = _ground([(0 if z < 8 else -(z - 8) * 0.9, z) for z in range(0, 46, 2)])
+    img = base.copy()
+    align.draw_guide(img, view, 25.0, 121.0, ahead, _guide_cue(-15, 8))
+    box = ImageChops.difference(base, img).getbbox()
+    assert box and box[0] == 0 and box[2] < 400 and box[3] < 460       # just a small pill on the left edge
+    gone = base.copy()
+    align.draw_guide(gone, view, 25.0, 121.0, ahead, _guide_cue(0, -10))   # junction already behind the camera
+    assert ImageChops.difference(base, gone).getbbox() is None
 
 
 @pytest.fixture

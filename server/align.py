@@ -250,8 +250,43 @@ def guide_shape(view, lat, lon, ahead):
     return {"L": L, "R": R, "C": C} if len(C) >= 2 else None
 
 
-def draw_guide(img, view, lat, lon, ahead):
-    """Translucent green path with an arrow head and a 'this way' tag on top of the frame (in place)."""
+def junction_state(view, lat, lon, pt):
+    """Where the junction is relative to this frame: 'in' = inside the picture, 'left' / 'right' = ahead but outside it,
+    None = too far ahead or already behind the camera (nothing to point at)."""
+    d = _dist((lat, lon), pt)
+    rel = math.radians(signed_diff(_bearing((lat, lon), pt), view["heading"]))
+    X, Z = d * math.sin(rel), d * math.cos(rel)
+    if Z < 3 or Z > 90:
+        return None
+    x = view["cx"] + view["f"] * X / Z
+    return "left" if x < OW * 0.06 else "right" if x > OW * 0.94 else "in"
+
+
+def draw_edge_hint(img, side):
+    """'◀ 路口在左側' pill on the edge where the junction lies, for when the road itself is outside the picture."""
+    path = find_cjk_font()
+    if path:
+        label = "◀ 路口在左側" if side == "left" else "路口在右側 ▶"
+    else:
+        label = "◀ Junction on the left" if side == "left" else "Junction on the right ▶"
+    font = _font(path, 30)
+    layer = Image.new("RGBA", img.size, (0, 0, 0, 0))
+    d = ImageDraw.Draw(layer)
+    w = d.textlength(label, font=font) + 32
+    x, y = (0 if side == "left" else OW - w), OH * 0.5
+    d.rounded_rectangle([x, y, x + w, y + 50], radius=25, fill=(245, 158, 11, 235))
+    d.text((x + 16, y + 26), label, font=font, fill=(31, 41, 55, 255), anchor="lm")
+    img.paste(Image.alpha_composite(img.convert("RGBA"), layer).convert("RGB"))
+
+
+def draw_guide(img, view, lat, lon, ahead, cue):
+    """Marks the way on the frame (in place) -- but only where the junction is actually in the picture. When it is not,
+    a path would land on pixels without a road, so just point to the side it is on."""
+    state = junction_state(view, lat, lon, cue["pt"])
+    if state is None:
+        return
+    if state != "in":
+        return draw_edge_hint(img, state)
     sh = guide_shape(view, lat, lon, ahead)
     if not sh:
         return

@@ -256,24 +256,35 @@ def pace_weights(pts, maneuvers, step):
 CUE_AHEAD_M, CUE_AFTER_M, CUE_NOW_M = 80.0, 15.0, 8.0
 
 
-def cues_for(pts, maneuvers, step):
-    """One cue (or None) per sample point: the nearest decision point within 80 m ahead / 15 m behind.
+def _nearest(line, p):
+    return min(range(len(line)), key=lambda i: haversine(line[i], p))
+
+
+def attach_cues(chosen, fine, maneuvers):
+    """Give every chosen image its cue, measured from where the *camera* was (not from the sample point the image
+    was picked for): the nearest decision point within 80 m ahead / 15 m behind along the route.
     dist = metres to go, rounded to 10 (0 = at the junction now)."""
-    s, at = locate_maneuvers(pts, maneuvers, step)
-    out = []
-    for i in range(len(pts)):
+    s = [0.0]
+    for i in range(1, len(fine)):
+        s.append(s[-1] + haversine(fine[i - 1], fine[i]))
+    ms = []
+    for m in maneuvers:
+        bi = _nearest(fine, m["pt"])
+        if haversine(fine[bi], m["pt"]) <= 40:
+            ms.append((m, s[bi]))
+    for f in chosen:
+        sc = s[_nearest(fine, (f["lat"], f["lon"]))]
         best = None
-        for m, bi in at:
-            d = s[bi] - s[i]
+        for m, sm in ms:
+            d = sm - sc
             if -CUE_AFTER_M <= d <= CUE_AHEAD_M and (best is None or abs(d) < abs(best[1])):
                 best = (m, d)
         if best is None:
-            out.append(None)
+            f["cue"] = None
             continue
         m, d = best
-        out.append({"type": m["type"], "mod": m["mod"], "name": m["name"], "exit": m["exit"],
-                    "dist": max(10, round(d / 10) * 10) if d > CUE_NOW_M else 0})
-    return out
+        f["cue"] = {"type": m["type"], "mod": m["mod"], "name": m["name"], "exit": m["exit"], "pt": m["pt"],
+                    "dist": max(10, round(d / 10) * 10) if d > CUE_NOW_M else 0}
 
 
 GUIDE_FROM_M, GUIDE_TO_M, GUIDE_LEN_M = 10, 60, 45.0
@@ -296,10 +307,10 @@ def route_ahead(fine, cam, length_m=GUIDE_LEN_M):
     return out
 
 
-def build_timeline(picks, durs, cues=None):
+def build_timeline(picks, durs):
     """Chosen images (consecutive duplicates merged) each with the screen time of the road stretch it covers."""
     chosen, last, lead, gaps = [], None, 0.0, 0
-    for i, (c, d) in enumerate(zip(picks, durs)):
+    for c, d in zip(picks, durs):
         if c is None:
             gaps += 1
             if chosen:
@@ -307,12 +318,10 @@ def build_timeline(picks, durs, cues=None):
             else:
                 lead += d
         elif c["id"] != last:
-            chosen.append({**c, "dur": d + lead, "cue": cues[i] if cues else None})
+            chosen.append({**c, "dur": d + lead})
             lead, last = 0.0, c["id"]
         else:
             chosen[-1]["dur"] += d
-            if cues and not chosen[-1]["cue"]:
-                chosen[-1]["cue"] = cues[i]
     return chosen, gaps
 
 
@@ -454,16 +463,18 @@ def build_video(
         time.sleep(delay)
         report("search", i + 1, len(pts))
     picks = choose_path(cands)
-    chosen, gaps = build_timeline(picks, pace_durations(pts, maneuvers, step, slow), cues_for(pts, maneuvers, step))
+    chosen, gaps = build_timeline(picks, pace_durations(pts, maneuvers, step, slow))
     if len(chosen) < 2:
         raise PipelineError(
             "Too few images along this route. Try a larger search radius / angle, or a better-covered road."
         )
-    if guide:   # frames shortly before a decision point get the route ahead drawn on them
+    if cues or guide:   # cue + path are worked out from where each image was really taken
         fine = [p for p, _ in resample(path, 2)]
-        for c in chosen:
-            if c.get("cue") and GUIDE_FROM_M <= c["cue"]["dist"] <= GUIDE_TO_M:
-                c["guide"] = route_ahead(fine, (c["lat"], c["lon"]))
+        attach_cues(chosen, fine, maneuvers)
+        if guide:
+            for c in chosen:
+                if c.get("cue") and GUIDE_FROM_M <= c["cue"]["dist"] <= GUIDE_TO_M:
+                    c["guide"] = route_ahead(fine, (c["lat"], c["lon"]))
     sequences = len({c["seq"] or c["id"] for c in chosen})
 
     # 2. download each image and align it to the route direction
@@ -480,8 +491,8 @@ def build_video(
         else:
             f = work / f"{len(files) + 1:05d}.jpg"
             img, view = aligner.align_frame_view(data, c, align)
-            if guide and c.get("guide"):
-                aligner.draw_guide(img, view, c["lat"], c["lon"], c["guide"])
+            if guide and c.get("guide") and c.get("cue"):
+                aligner.draw_guide(img, view, c["lat"], c["lon"], c["guide"], c["cue"])
             if cues and c.get("cue"):
                 aligner.draw_cue(img, c["cue"])
             img.save(f, quality=92)

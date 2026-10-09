@@ -1,0 +1,241 @@
+<!doctype html>
+<html lang="zh-Hant">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>路線街景影片</title>
+<link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/leaflet/1.9.4/leaflet.min.css">
+<style>
+  :root { --bg:#f6f7f9; --panel:#fff; --text:#1c2027; --muted:#6a7280; --line:#dfe3e8; --accent:#2563eb; --bad:#c62828; --ok:#2e7d32; }
+  @media (prefers-color-scheme: dark) {
+    :root { --bg:#14171c; --panel:#1d2128; --text:#e8eaed; --muted:#9aa3b0; --line:#2e343d; --accent:#6ea0ff; --bad:#ff7b72; --ok:#6fcf74; }
+  }
+  * { box-sizing:border-box; }
+  body { margin:0; font:15px/1.5 system-ui,-apple-system,"Noto Sans TC",sans-serif; background:var(--bg); color:var(--text); }
+  .layout { display:grid; grid-template-columns:380px 1fr; height:100vh; }
+  aside { background:var(--panel); border-right:1px solid var(--line); overflow-y:auto; padding:16px; }
+  #map { height:100%; min-height:300px; }
+  h1 { font-size:18px; margin:0 0 12px; }
+  h2 { font-size:13px; margin:18px 0 6px; color:var(--muted); text-transform:uppercase; letter-spacing:.04em; }
+  label { display:block; font-size:13px; color:var(--muted); margin:8px 0 3px; }
+  input, select, button { font:inherit; color:inherit; }
+  input[type=text], input[type=number], input[type=password], select {
+    width:100%; padding:7px 9px; border:1px solid var(--line); border-radius:6px; background:var(--bg); }
+  .row { display:flex; gap:6px; }
+  .row > * { flex:1; }
+  button { padding:7px 12px; border:1px solid var(--line); border-radius:6px; background:var(--bg); cursor:pointer; }
+  button.primary { background:var(--accent); border-color:var(--accent); color:#fff; width:100%; padding:10px; margin-top:14px; font-weight:600; }
+  button:disabled { opacity:.5; cursor:not-allowed; }
+  .pt { display:flex; gap:6px; align-items:center; }
+  .pt input { flex:1; }
+  .pt button { flex:none; padding:7px 9px; }
+  .dot { width:12px; height:12px; border-radius:50%; flex:none; }
+  .results { border:1px solid var(--line); border-radius:6px; margin-top:4px; background:var(--bg); }
+  .results div { padding:6px 9px; cursor:pointer; font-size:13px; border-bottom:1px solid var(--line); }
+  .results div:last-child { border:0; }
+  .results div:hover { background:var(--line); }
+  details { margin-top:12px; }
+  summary { cursor:pointer; color:var(--muted); font-size:13px; }
+  .hint { font-size:12px; color:var(--muted); margin-top:4px; }
+  .check { display:flex; gap:6px; align-items:center; margin-top:8px; font-size:13px; }
+  .check input { width:auto; }
+  .bar { height:8px; border-radius:4px; background:var(--line); overflow:hidden; margin:8px 0 4px; }
+  .bar > div { height:100%; width:0; background:var(--accent); transition:width .3s; }
+  .job { border:1px solid var(--line); border-radius:8px; padding:10px; margin-top:10px; }
+  .job .meta { font-size:12px; color:var(--muted); }
+  .err { color:var(--bad); font-size:13px; margin-top:6px; }
+  .ok { color:var(--ok); }
+  video { width:100%; border-radius:6px; margin-top:8px; background:#000; }
+  .links a { margin-right:12px; color:var(--accent); font-size:13px; }
+  footer { margin-top:18px; font-size:11px; color:var(--muted); }
+  @media (max-width:800px) { .layout { grid-template-columns:1fr; height:auto; } #map { height:45vh; order:-1; } aside { border:0; } }
+</style>
+</head>
+<body>
+<div class="layout">
+<aside>
+  <h1>路線街景影片</h1>
+  <div class="hint">在地圖上點選起點與終點，或輸入地址搜尋。</div>
+
+  <h2>路線</h2>
+  <div class="pt"><span class="dot" style="background:#2e7d32"></span><input type="text" id="qs" placeholder="起點（地址 / 地名）"><button id="ps" title="在地圖上選取">📍</button></div>
+  <div id="rs" class="results" hidden></div>
+  <div class="pt" style="margin-top:8px"><span class="dot" style="background:#c62828"></span><input type="text" id="qe" placeholder="終點（地址 / 地名）"><button id="pe" title="在地圖上選取">📍</button></div>
+  <div id="re" class="results" hidden></div>
+  <div class="row" style="margin-top:8px">
+    <select id="profile"><option value="driving">開車</option><option value="cycling">騎車</option><option value="walking">步行</option></select>
+    <button id="swap">⇅ 互換</button>
+  </div>
+  <div class="hint" id="routeInfo"></div>
+
+  <h2>Mapillary Token</h2>
+  <div id="tokenBox"><input type="password" id="token" placeholder="MLY|..." autocomplete="off"><div class="hint">只存在這個瀏覽器，不會顯示在頁面或記錄中。</div></div>
+  <div id="tokenServer" class="hint" hidden>伺服器已設定 token，無需輸入。</div>
+
+  <details>
+    <summary>進階設定</summary>
+    <label>幀間距（公尺）</label><input type="number" id="step" value="10" min="3" max="100">
+    <label>搜尋半徑（公尺）</label><input type="number" id="radius" value="25" min="5" max="100">
+    <label>方向容許角度（度）</label><input type="number" id="max_angle" value="60" min="10" max="180">
+    <label>每秒幀數</label><input type="number" id="fps" value="12" min="1" max="30">
+    <label>最多幀數（0 = 不限，試跑可填 50）</label><input type="number" id="max_frames" value="0" min="0">
+    <div class="check"><input type="checkbox" id="smooth"><span>平滑（混合插幀，較慢）</span></div>
+    <div class="check"><input type="checkbox" id="allow_pano"><span>允許 360° 全景圖（可能變形）</span></div>
+  </details>
+
+  <button class="primary" id="go" disabled>產生影片</button>
+  <div class="err" id="formErr"></div>
+
+  <h2>任務</h2>
+  <div id="jobs"><div class="hint">尚無任務</div></div>
+
+  <footer>影像來源：Mapillary 貢獻者，CC-BY-SA 4.0。分享影片時請標註。路線 © OSRM / OpenStreetMap 貢獻者。僅供個人非商業使用。</footer>
+</aside>
+<div id="map"></div>
+</div>
+
+<script src="https://cdnjs.cloudflare.com/ajax/libs/leaflet/1.9.4/leaflet.min.js"></script>
+<script>
+const $ = id => document.getElementById(id);
+const store = { get(k){ try { return localStorage.getItem(k); } catch { return null; } },
+                set(k,v){ try { localStorage.setItem(k,v); } catch {} } };
+const state = { start:null, end:null, picking:null, serverToken:false };
+
+const map = L.map('map').setView([25.04, 121.55], 12);
+L.tileLayer('https://tile.openstreetmap.org/{z}/{x}/{y}.png', { maxZoom:19, attribution:'© OpenStreetMap contributors' }).addTo(map);
+const marker = c => L.circleMarker([0,0], { radius:9, color:'#fff', weight:2, fillColor:c, fillOpacity:1 });
+const mS = marker('#2e7d32'), mE = marker('#c62828');
+let line = null;
+
+function setPoint(which, lat, lon, label) {
+  state[which] = { lat, lon };
+  const m = which === 'start' ? mS : mE;
+  m.setLatLng([lat, lon]).addTo(map);
+  $(which === 'start' ? 'qs' : 'qe').value = label || `${lat.toFixed(5)}, ${lon.toFixed(5)}`;
+  refresh();
+}
+
+map.on('click', e => {
+  const which = state.picking || (!state.start ? 'start' : !state.end ? 'end' : null);
+  if (!which) return;
+  setPoint(which, e.latlng.lat, e.latlng.lng);
+  state.picking = null;
+  document.querySelectorAll('#ps,#pe').forEach(b => b.style.outline = '');
+});
+for (const [btn, which] of [['ps','start'], ['pe','end']]) {
+  $(btn).onclick = () => { state.picking = which; $(btn).style.outline = '2px solid var(--accent)'; };
+}
+
+function search(inputId, boxId, which) {
+  const input = $(inputId), box = $(boxId);
+  let timer;
+  input.addEventListener('input', () => {
+    clearTimeout(timer);
+    const q = input.value.trim();
+    if (q.length < 3 || /^-?\d+\.?\d*\s*,\s*-?\d+\.?\d*$/.test(q)) { box.hidden = true; return; }
+    timer = setTimeout(async () => {
+      try {
+        const r = await (await fetch('/api/geocode?q=' + encodeURIComponent(q))).json();
+        box.innerHTML = '';
+        (r.results || []).forEach(x => {
+          const d = document.createElement('div');
+          d.textContent = x.name;
+          d.onclick = () => { setPoint(which, x.lat, x.lon, x.name); box.hidden = true; map.setView([x.lat, x.lon], 15); };
+          box.appendChild(d);
+        });
+        box.hidden = !box.children.length;
+      } catch { box.hidden = true; }
+    }, 600);
+  });
+}
+search('qs', 'rs', 'start'); search('qe', 're', 'end');
+
+$('swap').onclick = () => {
+  const s = state.start, e = state.end, qs = $('qs').value, qe = $('qe').value;
+  if (e) setPoint('start', e.lat, e.lon, qe);
+  if (s) setPoint('end', s.lat, s.lon, qs);
+};
+
+let routeSeq = 0;
+async function refresh() {
+  $('go').disabled = !(state.start && state.end);
+  if (!(state.start && state.end)) return;
+  const seq = ++routeSeq;
+  $('routeInfo').textContent = '計算路線中…';
+  try {
+    const r = await fetch('/api/route', { method:'POST', headers:{'Content-Type':'application/json'},
+      body: JSON.stringify({ start:state.start, end:state.end, profile:$('profile').value, step:+$('step').value }) });
+    const d = await r.json();
+    if (seq !== routeSeq) return;
+    if (!r.ok) { $('routeInfo').textContent = d.error; return; }
+    if (line) line.remove();
+    line = L.polyline(d.path, { color:'#2563eb', weight:4 }).addTo(map);
+    map.fitBounds(line.getBounds(), { padding:[40,40] });
+    $('routeInfo').textContent = `約 ${(d.distance_m/1000).toFixed(1)} 公里，預估 ${d.est_frames} 張影像`;
+  } catch { $('routeInfo').textContent = '無法取得路線'; }
+}
+$('profile').onchange = refresh; $('step').onchange = refresh;
+
+fetch('/api/config').then(r => r.json()).then(c => {
+  state.serverToken = c.server_token;
+  $('tokenBox').hidden = c.server_token;
+  $('tokenServer').hidden = !c.server_token;
+});
+$('token').value = store.get('mly_token') || '';
+
+$('go').onclick = async () => {
+  $('formErr').textContent = '';
+  const token = $('token').value.trim();
+  if (!state.serverToken && !token) { $('formErr').textContent = '請輸入 Mapillary token'; return; }
+  if (token) store.set('mly_token', token);
+  const body = { start:state.start, end:state.end, profile:$('profile').value, token,
+    step:+$('step').value, radius:+$('radius').value, max_angle:+$('max_angle').value, fps:+$('fps').value,
+    max_frames:+$('max_frames').value, smooth:$('smooth').checked, allow_pano:$('allow_pano').checked };
+  const r = await fetch('/api/jobs', { method:'POST', headers:{'Content-Type':'application/json'}, body:JSON.stringify(body) });
+  const d = await r.json();
+  if (!r.ok) { $('formErr').textContent = d.error; return; }
+  poll();
+};
+
+const STAGE = { queued:'排隊中', route:'規劃路線', frames:'下載影像', encode:'合成影片', done:'完成' };
+let timer = null;
+function el(tag, props = {}, ...kids) {
+  const e = Object.assign(document.createElement(tag), props);
+  kids.forEach(k => e.append(k));
+  return e;
+}
+function renderJob(j) {
+  const box = el('div', { className:'job' });
+  const pct = j.total ? Math.round(100 * j.done / j.total) : (j.status === 'done' ? 100 : 0);
+  box.append(el('div', {}, `${(+j.start[0]).toFixed(3)}, ${(+j.start[1]).toFixed(3)} → ${(+j.end[0]).toFixed(3)}, ${(+j.end[1]).toFixed(3)}`));
+  if (j.status === 'queued' || j.status === 'running') {
+    box.append(el('div', { className:'bar' }, el('div', { style:`width:${pct}%` })));
+    box.append(el('div', { className:'meta' }, `${STAGE[j.stage] || j.stage} ${j.total ? j.done + '/' + j.total : ''} ${j.info || ''}`));
+    const c = el('button', { textContent:'取消' });
+    c.onclick = () => fetch(`/api/jobs/${j.id}/cancel`, { method:'POST' });
+    box.append(c);
+  } else if (j.status === 'done') {
+    box.append(el('div', { className:'meta ok' }, `完成：${j.result.frames} 張，${(j.result.distance_m/1000).toFixed(1)} 公里，${j.result.gaps} 處無影像`));
+    const v = el('video', { controls:true, preload:'metadata', src:`/api/jobs/${j.id}/video` });
+    box.append(v, el('div', { className:'links' }, el('a', { href:`/api/jobs/${j.id}/video?download=1`, textContent:'下載 mp4' })));
+  } else {
+    box.append(el('div', { className:'err' }, j.status === 'cancelled' ? '已取消' : (j.error || '失敗')));
+  }
+  return box;
+}
+async function poll() {
+  clearTimeout(timer);
+  let jobs = [];
+  try { jobs = (await (await fetch('/api/jobs')).json()).jobs; } catch {}
+  const holder = $('jobs');
+  const playing = [...holder.querySelectorAll('video')].find(v => !v.paused);
+  const busy = jobs.some(j => j.status === 'queued' || j.status === 'running');
+  if (!playing || busy) {  // do not rebuild the list while a video plays
+    holder.replaceChildren(...(jobs.length ? jobs.map(renderJob) : [el('div', { className:'hint' }, '尚無任務')]));
+  }
+  if (busy) timer = setTimeout(poll, 1500);
+}
+poll();
+</script>
+</body>
+</html>

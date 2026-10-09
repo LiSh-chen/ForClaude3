@@ -160,6 +160,54 @@ def test_encode_video_length_follows_durations(tmp_path, smooth):
     assert float(r.stdout) == pytest.approx(3.0, abs=0.25)
 
 
+def _mans():
+    return [{"pt": (25.0045, 121.0), "sev": 1.0, "type": "turn", "mod": "right", "name": "中山北路二段", "exit": 0}]
+
+
+def test_cues_count_down_then_clear():
+    pts = core.resample([(25.0, 121.0), (25.0045, 121.0), (25.009, 121.0)], 10)
+    mid = 50                                                            # the turn sits at sample 50
+    c = core.cues_for(pts, _mans(), 10)
+    assert c[10] is None                                                # nothing far from the junction
+    assert [c[mid - k]["dist"] for k in (7, 5, 1)] == [70, 50, 10]      # countdown in 10 m steps
+    assert c[mid]["dist"] == 0 and c[mid + 1]["dist"] == 0              # at the junction: instruction only
+    assert c[mid + 2] is None                                           # cleared once past it
+    assert c[mid]["name"] == "中山北路二段"
+
+
+def test_timeline_keeps_first_cue_of_a_frame():
+    c = lambda i: {"id": i, "seq": None, "t": 0, "ang": 0, "pano": False, "u": 0}
+    chosen, _ = core.build_timeline([c("a"), c("a"), c("b")], [1, 1, 1], [None, {"dist": 10}, {"dist": 0}])
+    assert [x["cue"] for x in chosen] == [{"dist": 10}, {"dist": 0}]
+
+
+def test_cue_text_chinese_and_english():
+    cue = {"type": "turn", "mod": "right", "name": "中山北路二段", "exit": 0, "dist": 50}
+    assert align.cue_text(cue, True) == ("50 公尺後 右轉", "進入 中山北路二段")
+    assert align.cue_text({**cue, "dist": 0}, True)[0] == "右轉"
+    assert align.cue_text(cue, False) == ("In 50 m: Turn right", "")      # non-ASCII names dropped without a CJK font
+    assert align.cue_text({**cue, "name": "Main St"}, False)[1] == "onto Main St"
+    rb = {"type": "roundabout", "mod": "right", "name": "", "exit": 2, "dist": 30}
+    assert align.cue_text(rb, True)[0] == "30 公尺後 進入圓環，第 2 個出口"
+    assert align.cue_text({"type": "fork", "mod": "slight left", "name": "", "dist": 0}, True)[0] == "叉路靠左"
+    assert align.cue_text({"type": "off ramp", "mod": "slight right", "name": "", "dist": 0}, False)[0] == "Take the exit"
+
+
+@pytest.mark.parametrize("font", ["cjk", "default"])
+def test_draw_cue_only_touches_the_banner(monkeypatch, font):
+    from PIL import Image, ImageChops
+    if font == "default":
+        monkeypatch.setattr(align, "_font_path", None)
+    elif not align.find_cjk_font():
+        pytest.skip("no CJK font installed")
+    base = Image.new("RGB", (1280, 720), (120, 160, 200))
+    img = base.copy()
+    align.draw_cue(img, {"type": "turn", "mod": "left", "name": "Main St", "exit": 0, "dist": 40})
+    box = ImageChops.difference(base, img).getbbox()
+    assert box and box[1] >= 20 and box[3] <= 160                      # drawn near the top
+    assert 300 < box[0] and box[2] < 980                               # and centred
+
+
 @pytest.fixture
 def client(monkeypatch):
     monkeypatch.delenv("MAPILLARY_TOKEN", raising=False)

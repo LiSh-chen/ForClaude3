@@ -215,21 +215,31 @@ def maneuvers_of(route):
             if not loc or typ in PLAIN_TYPES or (typ == "turn" and mod in ("", "straight")):
                 continue
             slight = "slight" in mod or any(w in typ for w in ("merge", "ramp", "exit"))
-            out.append({"pt": (loc[1], loc[0]), "sev": 0.6 if slight else 1.0, "type": typ, "mod": mod})
+            out.append({"pt": (loc[1], loc[0]), "sev": 0.6 if slight else 1.0, "type": typ, "mod": mod,
+                        "name": st.get("name") or "", "exit": m.get("exit") or 0})
     return out
+
+
+def locate_maneuvers(pts, maneuvers, step):
+    """Cumulative distance along the sampled route, and (maneuver, sample index) for every decision point on it."""
+    s = [0.0]
+    for i in range(1, len(pts)):
+        s.append(s[-1] + haversine(pts[i - 1][0], pts[i][0]))
+    at = []
+    for m in maneuvers:
+        dists = [haversine(p[0], m["pt"]) for p in pts]
+        bi = min(range(len(pts)), key=dists.__getitem__)
+        if dists[bi] <= max(40.0, step * 2):
+            at.append((m, bi))
+    return s, at
 
 
 def pace_weights(pts, maneuvers, step):
     """0..1 per sample point: how close it is to a decision point or a sharp bend."""
     n = len(pts)
-    s, w = [0.0], [0.0] * n
-    for i in range(1, n):
-        s.append(s[-1] + haversine(pts[i - 1][0], pts[i][0]))
-    for m in maneuvers:
-        dists = [haversine(p[0], m["pt"]) for p in pts]
-        bi = min(range(n), key=dists.__getitem__)
-        if dists[bi] > max(40.0, step * 2):
-            continue
+    s, at = locate_maneuvers(pts, maneuvers, step)
+    w = [0.0] * n
+    for m, bi in at:
         for i in range(n):
             d = s[i] - s[bi]
             z, a = (APPROACH_M if d < 0 else AFTER_M), abs(d)
@@ -243,15 +253,38 @@ def pace_weights(pts, maneuvers, step):
     return w
 
 
+CUE_AHEAD_M, CUE_AFTER_M, CUE_NOW_M = 80.0, 15.0, 8.0
+
+
+def cues_for(pts, maneuvers, step):
+    """One cue (or None) per sample point: the nearest decision point within 80 m ahead / 15 m behind.
+    dist = metres to go, rounded to 10 (0 = at the junction now)."""
+    s, at = locate_maneuvers(pts, maneuvers, step)
+    out = []
+    for i in range(len(pts)):
+        best = None
+        for m, bi in at:
+            d = s[bi] - s[i]
+            if -CUE_AFTER_M <= d <= CUE_AHEAD_M and (best is None or abs(d) < abs(best[1])):
+                best = (m, d)
+        if best is None:
+            out.append(None)
+            continue
+        m, d = best
+        out.append({"type": m["type"], "mod": m["mod"], "name": m["name"], "exit": m["exit"],
+                    "dist": max(10, round(d / 10) * 10) if d > CUE_NOW_M else 0})
+    return out
+
+
 def pace_durations(pts, maneuvers, step, slow):
     """Screen time per sample point in units of 1/fps: 1 on open road, up to `slow` at a decision point."""
     return [1 + (slow - 1) * w for w in pace_weights(pts, maneuvers, step)]
 
 
-def build_timeline(picks, durs):
+def build_timeline(picks, durs, cues=None):
     """Chosen images (consecutive duplicates merged) each with the screen time of the road stretch it covers."""
     chosen, last, lead, gaps = [], None, 0.0, 0
-    for c, d in zip(picks, durs):
+    for i, (c, d) in enumerate(zip(picks, durs)):
         if c is None:
             gaps += 1
             if chosen:
@@ -259,10 +292,12 @@ def build_timeline(picks, durs):
             else:
                 lead += d
         elif c["id"] != last:
-            chosen.append({**c, "dur": d + lead})
+            chosen.append({**c, "dur": d + lead, "cue": cues[i] if cues else None})
             lead, last = 0.0, c["id"]
         else:
             chosen[-1]["dur"] += d
+            if cues and not chosen[-1]["cue"]:
+                chosen[-1]["cue"] = cues[i]
     return chosen, gaps
 
 
@@ -360,6 +395,7 @@ def build_video(
     max_angle=60.0,
     fps=4.0,
     slow=3.0,
+    cues=True,
     allow_pano=False,
     max_frames=0,
     delay=0.1,
@@ -402,7 +438,7 @@ def build_video(
         time.sleep(delay)
         report("search", i + 1, len(pts))
     picks = choose_path(cands)
-    chosen, gaps = build_timeline(picks, pace_durations(pts, maneuvers, step, slow))
+    chosen, gaps = build_timeline(picks, pace_durations(pts, maneuvers, step, slow), cues_for(pts, maneuvers, step))
     if len(chosen) < 2:
         raise PipelineError(
             "Too few images along this route. Try a larger search radius / angle, or a better-covered road."
@@ -422,7 +458,10 @@ def build_video(
                 carry += c["dur"]
         else:
             f = work / f"{len(files) + 1:05d}.jpg"
-            aligner.align_frame(data, c, align).save(f, quality=92)
+            img = aligner.align_frame(data, c, align)
+            if cues and c.get("cue"):
+                aligner.draw_cue(img, c["cue"])
+            img.save(f, quality=92)
             files.append(f)
             durs.append(c["dur"] + carry)
             carry = 0.0

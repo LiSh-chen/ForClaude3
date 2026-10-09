@@ -138,6 +138,7 @@ def create_job():
             allow_pano=bool(b.get("allow_pano")),
             smooth=bool(b.get("smooth")),
             align=bool(b.get("align", True)),
+            cues=bool(b.get("cues", True)),
         )
     except ValueError as e:
         return jsonify(error=str(e)), 400

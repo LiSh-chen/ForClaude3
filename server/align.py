@@ -1,9 +1,11 @@
 """Frame alignment: keep the road direction in the middle of every 1280x720 frame."""
+import glob
 import io
 import math
+import os
 
 import numpy as np
-from PIL import Image
+from PIL import Image, ImageDraw, ImageFont
 
 OW, OH = 1280, 720
 _grid_cache = {}
@@ -71,3 +73,116 @@ def align_frame(data, meta, align=True):
     out = Image.new("RGB", (OW, OH))
     out.paste(img, ((OW - img.width) // 2, (OH - img.height) // 2))
     return out
+
+
+# ---------- direction cues drawn onto the frame ----------
+DIR_ZH = {"left": "左轉", "right": "右轉", "slight left": "靠左", "slight right": "靠右", "sharp left": "大角度左轉",
+          "sharp right": "大角度右轉", "uturn": "迴轉", "straight": "直行"}
+DIR_EN = {"left": "Turn left", "right": "Turn right", "slight left": "Bear left", "slight right": "Bear right",
+          "sharp left": "Sharp left", "sharp right": "Sharp right", "uturn": "U-turn", "straight": "Continue straight"}
+DIR_ANGLE = {"left": -90, "right": 90, "slight left": -40, "slight right": 40, "sharp left": -135,
+             "sharp right": 135, "uturn": 180, "straight": 0}
+_FONT_GLOBS = [
+    "/usr/share/fonts/**/NotoSansCJK*", "/usr/share/fonts/**/NotoSansTC*", "/usr/share/fonts/**/wqy-*",
+    "/usr/share/fonts/**/DroidSansFallback*", "/usr/share/fonts/**/NotoSerifCJK*",
+    "/System/Library/Fonts/PingFang*", "/System/Library/Fonts/STHeiti*", "C:/Windows/Fonts/msjh*.tt*",
+]
+_font_path = False
+
+
+def find_cjk_font():
+    """Path of a font that can draw Chinese (SV_FONT overrides), or None."""
+    global _font_path
+    if _font_path is False:
+        cands = [os.environ.get("SV_FONT", "")]
+        for g in _FONT_GLOBS:
+            cands += sorted(glob.glob(g, recursive=True))
+        _font_path = next((c for c in cands if c and os.path.isfile(c)), None)
+    return _font_path
+
+
+def _side(mod):
+    return "left" if "left" in mod else "right" if "right" in mod else ""
+
+
+def cue_text(cue, zh=True):
+    """(line 1, line 2) of the banner. zh=False gives English (used when no Chinese font is installed)."""
+    typ, mod, ex = cue["type"], cue.get("mod") or "", cue.get("exit") or 0
+    side = _side(mod)
+    if zh:
+        sd = {"left": "左", "right": "右"}.get(side, "")
+        if typ in ("roundabout", "rotary"):
+            phrase = f"進入圓環，第 {ex} 個出口" if ex else "進入圓環"
+        elif typ in ("exit roundabout", "exit rotary"):
+            phrase = "駛出圓環"
+        elif typ == "fork":
+            phrase = f"叉路靠{sd}" if sd else "叉路"
+        elif typ == "end of road":
+            phrase = f"路底{DIR_ZH.get(mod, '轉彎')}" if sd else "路底轉彎"
+        elif typ == "on ramp":
+            phrase = f"上匝道（靠{sd}）" if sd else "上匝道"
+        elif typ in ("off ramp", "exit"):
+            phrase = f"下匝道（靠{sd}）" if sd else "下匝道"
+        elif typ == "merge":
+            phrase = f"匯入（靠{sd}）" if sd else "匯入車道"
+        else:
+            phrase = DIR_ZH.get(mod, "直行")
+        l1 = f"{cue['dist']} 公尺後 {phrase}" if cue["dist"] else phrase
+        l2 = f"進入 {cue['name']}" if cue.get("name") else ""
+        return l1, l2
+    if typ in ("roundabout", "rotary"):
+        phrase = f"Roundabout, exit {ex}" if ex else "Roundabout"
+    elif typ in ("exit roundabout", "exit rotary"):
+        phrase = "Leave the roundabout"
+    elif typ == "fork":
+        phrase = f"Keep {side} at the fork" if side else "Fork"
+    elif typ == "end of road":
+        phrase = f"End of road, {DIR_EN.get(mod, 'turn').lower()}"
+    elif typ == "on ramp":
+        phrase = "Take the ramp"
+    elif typ in ("off ramp", "exit"):
+        phrase = "Take the exit"
+    elif typ == "merge":
+        phrase = f"Merge {side}" if side else "Merge"
+    else:
+        phrase = DIR_EN.get(mod, "Continue straight")
+    l1 = f"In {cue['dist']} m: {phrase}" if cue["dist"] else phrase
+    name = cue.get("name") or ""
+    return l1, (f"onto {name}" if name and name.isascii() else "")
+
+
+def _font(path, size):
+    return ImageFont.truetype(path, size) if path else ImageFont.load_default(size)
+
+
+def draw_cue(img, cue):
+    """Banner at the top of a 1280x720 frame: arrow, '50 公尺後 右轉', and the road being entered. In place."""
+    path = find_cjk_font()
+    l1, l2 = cue_text(cue, zh=bool(path))
+    big, small = 40, 28
+    meas = ImageDraw.Draw(img)
+    while True:   # shrink long road names until the banner fits
+        f1, f2 = _font(path, big), _font(path, small)
+        tw = max(meas.textlength(l1, font=f1), meas.textlength(l2, font=f2) if l2 else 0)
+        if tw + 150 <= OW - 40 or big <= 20:
+            break
+        big, small = big - 2, max(14, small - 2)
+    bw, bh = int(tw + 150), 112 if l2 else 84
+    x, y = (OW - bw) // 2, 24
+    layer = Image.new("RGBA", img.size, (0, 0, 0, 0))
+    d = ImageDraw.Draw(layer)
+    d.rounded_rectangle([x, y, x + bw, y + bh], radius=18, fill=(15, 20, 28, 204))
+    cx, cy, size = x + 56, y + bh // 2, 56.0
+    if cue.get("type") in ("roundabout", "rotary"):
+        r = size * 0.6
+        d.ellipse([cx - r, cy - r, cx + r, cy + r], outline=(255, 255, 255, 255), width=max(2, round(size * 0.09)))
+        size *= 0.8
+    th = math.radians(DIR_ANGLE.get(cue.get("mod") or "", 0))
+    pts = [(0, -.5), (.38, -.05), (.14, -.05), (.14, .5), (-.14, .5), (-.14, -.05), (-.38, -.05)]
+    d.polygon([(cx + (px * math.cos(th) - py * math.sin(th)) * size, cy + (px * math.sin(th) + py * math.cos(th)) * size)
+               for px, py in pts], fill=(255, 255, 255, 255))
+    d.text((x + 110, y + (38 if l2 else bh // 2)), l1, font=f1, fill=(255, 255, 255, 255), anchor="lm", stroke_width=1,
+           stroke_fill=(255, 255, 255, 255))
+    if l2:
+        d.text((x + 110, y + 80), l2, font=f2, fill=(214, 219, 227, 255), anchor="lm")
+    img.paste(Image.alpha_composite(img.convert("RGBA"), layer).convert("RGB"))

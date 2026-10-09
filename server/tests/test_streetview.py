@@ -420,6 +420,79 @@ def test_build_video_replaces_images_without_a_visible_road(tmp_path, monkeypatc
     assert set(used) == {"sk"} and r["view_skipped"] == 0               # filter off: the closer picture wins
 
 
+def _world_road(Xw, Zw):
+    """A road running north (|X|<4) with a road branching west at Z=100 (96..104)."""
+    import numpy as np
+    return ((np.abs(Xw) < 4) & (Zw >= -50)) | ((Zw >= 96) & (Zw <= 104) & (Xw <= 0) & (Xw > -300))
+
+
+def _pano_jpeg(px, pz, w=1024, h=512, cam_h=2.4):
+    """Equirectangular panorama taken at (px, pz) in that world: sky above, grass and roads below."""
+    import io
+    import numpy as np
+    from PIL import Image
+    lon = (np.arange(w) + 0.5) / w * 2 * np.pi - np.pi
+    lat = np.pi / 2 - (np.arange(h) + 0.5) / h * np.pi
+    LO, LA = np.meshgrid(lon, lat)
+    img = np.zeros((h, w, 3), np.float32)
+    img[:] = (150, 190, 235)
+    below = LA < -0.01
+    D = np.where(below, cam_h / np.tan(np.clip(-LA, 1e-3, None)), 1e9)
+    X, Z = D * np.sin(LO) + px, D * np.cos(LO) + pz
+    img[below] = (95, 125, 60)
+    img[_world_road(X, Z) & below] = (112, 112, 115)
+    b = io.BytesIO()
+    Image.fromarray(np.clip(img, 0, 255).astype(np.uint8)).save(b, "JPEG", quality=90)
+    return b.getvalue()
+
+
+def _junction_scene():
+    """Route north 100 m then west; left turn at the end of the north stretch; chosen frames approaching it."""
+    fine = [p for p, _ in core.resample(_ground([(0, 0), (0, 100), (-100, 100)]), 2)]
+    man = [{"type": "turn", "mod": "left", "name": "民權路", "exit": 0, "sev": 1.0, "pt": _ground([(0, 100)])[0]}]
+    frames = [{"id": f"f{z}", "lat": _ground([(0, z)])[0][0], "lon": _ground([(0, z)])[0][1], "ang": 0.0, "pano": False,
+               "hd": 0.0, "url": f"u{z}", "seq": "S", "cam": [0.8, 0, 0], "dur": 1.0} for z in (30, 45, 60, 75, 90, 100)]
+    core.attach_cues(frames, fine, man)
+    return fine, man, frames
+
+
+def test_junction_panorama_swivels_from_the_approach_road_towards_the_road_to_take():
+    fine, man, frames = _junction_scene()
+    lat, lon = _ground([(0, 85)])[0]
+    pool = {"p1": {"id": "p1", "lat": lat, "lon": lon, "ang": 0.0, "seq": "P", "url2048": "pano", "url": "pano"}}
+    data = {"pano": _pano_jpeg(0, 85)}
+    used = core.apply_junction_panos(frames, pool, fine, man, True, data.get)
+    assert used == 1
+    zone = [f for f in frames if f.get("jp")]
+    assert len(zone) >= 3 and all(f["pano"] and f["lat"] == lat and f["dur"] == 1.0 for f in zone)
+    hds = [round(f["hd"]) for f in zone]
+    assert hds[0] == 0 and abs(hds[-1] - hds[-2]) <= 5                          # settles on the final view
+    assert all(a >= b for a, b in zip([h if h < 180 else h - 360 for h in hds], [h if h < 180 else h - 360 for h in hds][1:]))   # turns left only
+    assert 300 < hds[-1] < 340                                                   # faces the entrance of the west road (~326)
+    assert all(f["guide"] and f["cue"]["pt"] != man[0]["pt"] for f in zone)      # path drawn; visibility judged by the entrance
+    assert not any(f.get("jp") for f in frames[:1])                              # frames far from the junction stay as they were
+
+
+def test_junction_panorama_is_skipped_when_it_does_not_show_the_road():
+    fine, man, frames = _junction_scene()
+    lat, lon = _ground([(0, 85)])[0]
+    data = {"pano": _pano_jpeg(0, 85)}
+    wrong_compass = {"p1": {"id": "p1", "lat": lat, "lon": lon, "ang": 90.0, "seq": "P", "url2048": "pano", "url": "pano"}}
+    assert core.apply_junction_panos(frames, wrong_compass, fine, man, True, data.get) == 0
+    assert not any(f.get("jp") for f in frames)
+    far = {"p1": {"id": "p1", "lat": lat, "lon": lon + 0.001, "ang": 0.0, "seq": "P", "url2048": "pano", "url": "pano"}}   # ~100 m off the route
+    assert core.apply_junction_panos(frames, far, fine, man, True, data.get) == 0
+    behind = {"p1": {**wrong_compass["p1"], "ang": 0.0, "lat": _ground([(0, 102)])[0][0]}}                                # already past the junction
+    assert core.apply_junction_panos(frames, behind, fine, man, True, data.get) == 0
+
+
+def test_guide_skips_leading_points_outside_the_frame():
+    view = {"cx": 640, "cy": 360, "f": 760, "heading": 317}                      # looking north-west from the start of the route
+    ahead = _ground([(0, z) for z in range(0, 16, 2)] + [(-x, 15) for x in range(2, 40, 2)])
+    sh = align.guide_shape(view, 25.0, 121.0, ahead)
+    assert sh and all(0.04 * 1280 <= c[0] <= 0.96 * 1280 for c in sh["C"])        # starts where it enters the frame
+
+
 @pytest.fixture
 def client(monkeypatch):
     monkeypatch.delenv("MAPILLARY_TOKEN", raising=False)

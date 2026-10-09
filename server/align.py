@@ -35,9 +35,26 @@ def _grid(hfov):
     return _grid_cache[hfov]
 
 
-def reproject_pano(img, yaw_rel, hfov=80.0):
-    """Perspective view out of an equirectangular panorama, looking yaw_rel degrees from its centre."""
-    src = np.asarray(img.convert("RGB"), dtype=np.float32)
+_pano_cache = collections.OrderedDict()
+
+
+def pano_source(data):
+    """Decoded panorama (uint8 array, at most 4096 px wide); the newest two are kept, since several frames share one."""
+    key = hash(data)
+    if key not in _pano_cache:
+        img = Image.open(io.BytesIO(data)).convert("RGB")
+        if img.width > 4096:
+            img = img.resize((4096, round(img.height * 4096 / img.width)), Image.LANCZOS)
+        _pano_cache[key] = np.asarray(img)
+        while len(_pano_cache) > 2:
+            _pano_cache.popitem(last=False)
+    return _pano_cache[key]
+
+
+def reproject_pano(src, yaw_rel, hfov=80.0):
+    """Perspective view out of an equirectangular panorama (PIL image or uint8 array), looking yaw_rel degrees from its centre."""
+    if isinstance(src, Image.Image):
+        src = np.asarray(src.convert("RGB"))
     sh, sw = src.shape[:2]
     dlon, lat = _grid(hfov)
     u = (dlon + yaw_rel) / 360 + 0.5
@@ -48,19 +65,19 @@ def reproject_pano(img, yaw_rel, hfov=80.0):
     tx, ty = (fx - x0)[..., None], (fy - y0)[..., None]
     xa = x0 % sw
     xb = (xa + 1) % sw
-    top = src[y0, xa] * (1 - tx) + src[y0, xb] * tx
-    bot = src[y0 + 1, xa] * (1 - tx) + src[y0 + 1, xb] * tx
+    top = src[y0, xa].astype(np.float32) * (1 - tx) + src[y0, xb].astype(np.float32) * tx
+    bot = src[y0 + 1, xa].astype(np.float32) * (1 - tx) + src[y0 + 1, xb].astype(np.float32) * tx
     return Image.fromarray((top * (1 - ty) + bot * ty).clip(0, 255).astype(np.uint8))
 
 
 def align_frame_view(data, meta, align=True):
     """Like align_frame, but also returns the camera model of the finished frame:
     {cx, cy: optical-axis pixel, f: focal length in px, heading: compass heading of the axis}."""
+    if meta["pano"]:
+        out = reproject_pano(pano_source(data), signed_diff(meta["hd"], meta["ang"] or 0.0))
+        return out, {"cx": OW / 2, "cy": OH / 2, "f": (OW / 2) / math.tan(math.radians(80) / 2), "heading": meta["hd"]}
     img = Image.open(io.BytesIO(data)).convert("RGB")
     iw, ih = img.size
-    if meta["pano"]:
-        out = reproject_pano(img, signed_diff(meta["hd"], meta["ang"] or 0.0))
-        return out, {"cx": OW / 2, "cy": OH / 2, "f": (OW / 2) / math.tan(math.radians(80) / 2), "heading": meta["hd"]}
     hf = hfov_of(meta.get("cam"), iw, ih)
     if align:
         s = max(OW / iw, OH / ih) * 1.12
@@ -243,8 +260,10 @@ def guide_shape(view, lat, lon, ahead):
         if Z - nz < 1 or Z + nz < 1:
             continue
         c = proj(X, Z)
-        if c[0] < OW * 0.04 or c[0] > OW * 0.96:                # stop where the path leaves the frame
-            break
+        if not OW * 0.04 <= c[0] <= OW * 0.96:                  # skip leading points outside the frame, stop where it leaves
+            if L:
+                break
+            continue
         L.append(proj(X + nx, Z + nz))
         R.append(proj(X - nx, Z - nz))
         C.append(c)

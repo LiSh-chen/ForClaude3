@@ -25,6 +25,7 @@ def main():
     ap.add_argument("--slow", type=float, default=3, help="slow-down factor at turns/forks (1 = off)")
     ap.add_argument("--allow-pano", action="store_true", help="use 360 panoramas, reprojected along the route (lower resolution)")
     ap.add_argument("--no-guide", action="store_true", help="do not mark the road to take on the frame")
+    ap.add_argument("--no-junction-pano", action="store_true", help="do not use panoramas to look into the road to take at junctions")
     ap.add_argument("--any-view", action="store_true", help="also use images where the road is not visible (sky, walls, ...)")
     ap.add_argument("--no-cues", action="store_true", help="do not draw direction text at turns and forks")
     ap.add_argument("--no-align", action="store_true", help="do not shift frames to centre the road direction")
@@ -43,7 +44,7 @@ def main():
         r = core.build_video(
             token, a.start, a.end, a.output, a.workdir, profile=a.profile, step=a.step,
             radius=a.radius, max_angle=a.max_angle, fps=a.fps, slow=a.slow, guide=not a.no_guide, allow_pano=a.allow_pano,
-            smooth=a.smooth, align=not a.no_align, cues=not a.no_cues, road_only=not a.any_view, max_frames=a.max_frames, progress=prog,
+            smooth=a.smooth, align=not a.no_align, cues=not a.no_cues, road_only=not a.any_view, junction_pano=not a.no_junction_pano, max_frames=a.max_frames, progress=prog,
         )
     except core.PipelineError as e:
         sys.exit(f"\n{e}")

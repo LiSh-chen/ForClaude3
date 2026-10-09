@@ -6,6 +6,7 @@ import subprocess
 import time
 from pathlib import Path
 
+import numpy as np
 import requests
 
 import align as aligner
@@ -109,7 +110,7 @@ def nearby_images(token, pt, radius):
     params = {
         "access_token": token,
         "fields": (
-            "id,computed_geometry,computed_compass_angle,thumb_256_url,thumb_1024_url,thumb_2048_url,"
+            "id,computed_geometry,computed_compass_angle,thumb_256_url,thumb_1024_url,thumb_2048_url,thumb_original_url,"
             "is_pano,sequence,captured_at,camera_parameters"
         ),
         "bbox": f"{pt[1]-dlon},{pt[0]-dlat},{pt[1]+dlon},{pt[0]+dlat}",
@@ -268,22 +269,22 @@ def attach_cues(chosen, fine, maneuvers):
     for i in range(1, len(fine)):
         s.append(s[-1] + haversine(fine[i - 1], fine[i]))
     ms = []
-    for m in maneuvers:
+    for idx, m in enumerate(maneuvers):
         bi = _nearest(fine, m["pt"])
         if haversine(fine[bi], m["pt"]) <= 40:
-            ms.append((m, s[bi]))
+            ms.append((m, s[bi], idx))
     for f in chosen:
         sc = s[_nearest(fine, (f["lat"], f["lon"]))]
         best = None
-        for m, sm in ms:
+        for m, sm, idx in ms:
             d = sm - sc
             if -CUE_AFTER_M <= d <= CUE_AHEAD_M and (best is None or abs(d) < abs(best[1])):
-                best = (m, d)
+                best = (m, d, idx)
         if best is None:
             f["cue"] = None
             continue
-        m, d = best
-        f["cue"] = {"type": m["type"], "mod": m["mod"], "name": m["name"], "exit": m["exit"], "pt": m["pt"],
+        m, d, idx = best
+        f["cue"] = {"type": m["type"], "mod": m["mod"], "name": m["name"], "exit": m["exit"], "pt": m["pt"], "mi": idx, "d": d,
                     "dist": max(10, round(d / 10) * 10) if d > CUE_NOW_M else 0}
 
 
@@ -406,6 +407,76 @@ def encode_video(files, durs, fps, smooth, output, check=None, report=None, out_
     return T[-1]
 
 
+JP_BEFORE_MIN, JP_BEFORE_MAX, JP_BEFORE_BEST, JP_CROSS_MAX, JP_ZONE_AHEAD, JP_ZONE_BEHIND = 3.0, 45.0, 15.0, 12.0, 45.0, 8.0
+
+
+def _smoothstep(x):
+    x = max(0.0, min(1.0, x))
+    return x * x * (3 - 2 * x)
+
+
+def _point_at_s(fine, s, target):
+    i = 0
+    while i < len(s) - 1 and s[i] < target:
+        i += 1
+    return fine[i]
+
+
+def pano_shows_road(data, p, heading, fine):
+    """Does a panorama, looking along `heading`, show the road where the route runs? Guards against a wrong compass angle."""
+    from PIL import Image
+    view = aligner.reproject_pano(aligner.pano_source(data), aligner.signed_diff(heading, p["ang"]))
+    small = np.asarray(view.resize((256, 144), Image.BOX))
+    cand = {"lat": p["lat"], "lon": p["lon"], "ang": heading, "cam": [0.596]}   # 0.596 = an 80 degree view
+    score = aligner.road_score(small, cand, route_ahead(fine, (p["lat"], p["lon"]), 45))
+    return score is None or score >= aligner.ROAD_MIN
+
+
+def apply_junction_panos(chosen, pano_pool, fine, maneuvers, guide, get):
+    """For each junction with a panorama just before it: the frames approaching it become views from that one spot,
+    starting along the approach road and swivelling to face the entrance of the road to take, so that road is actually
+    in the picture. Returns how many junctions were done this way."""
+    if not pano_pool:
+        return 0
+    s = [0.0]
+    for i in range(1, len(fine)):
+        s.append(s[-1] + haversine(fine[i - 1], fine[i]))
+    used = 0
+    for k, man in enumerate(maneuvers):
+        bi = _nearest(fine, man["pt"])
+        if haversine(fine[bi], man["pt"]) > 40:
+            continue
+        sm = s[bi]
+        zone = [f for f in chosen if f.get("cue") and f["cue"]["mi"] == k and not f.get("jp")
+                and -JP_ZONE_BEHIND <= f["cue"]["d"] <= JP_ZONE_AHEAD]
+        if len(zone) < 3:
+            continue
+        found = []
+        for p in pano_pool.values():
+            i = _nearest(fine, (p["lat"], p["lon"]))
+            cross, before = haversine(fine[i], (p["lat"], p["lon"])), sm - s[i]
+            if cross <= JP_CROSS_MAX and JP_BEFORE_MIN <= before <= JP_BEFORE_MAX:
+                found.append((abs(before - JP_BEFORE_BEST) + 1.5 * cross, p["id"], p))
+        found.sort(key=lambda t: t[:2])
+        approach = bearing(_point_at_s(fine, s, sm - 18), _point_at_s(fine, s, sm - 3))
+        entry = _point_at_s(fine, s, sm + 12)   # 12 m into the road to take
+        for _, _, p in found[:3]:
+            data = get(p["url2048"])
+            if not data or not pano_shows_road(data, p, approach, fine):
+                continue
+            turn = max(-110.0, min(110.0, aligner.signed_diff(bearing((p["lat"], p["lon"]), entry), approach)))
+            for j, f in enumerate(zone):
+                t = j / (len(zone) - 1)
+                f.update({"id": f"{p['id']}@{k}.{j}", "lat": p["lat"], "lon": p["lon"], "ang": p["ang"], "pano": True,
+                          "url": p["url"], "cam": None, "seq": p["seq"], "jp": True,
+                          "hd": (approach + turn * _smoothstep((t - 0.15) / 0.6)) % 360})
+                f["cue"] = {**f["cue"], "pt": entry}   # is the road to take in view? judge by its entrance
+                f["guide"] = route_ahead(fine, (p["lat"], p["lon"])) if guide else None
+            used += 1
+            break
+    return used
+
+
 def build_video(
     token,
     start,
@@ -421,6 +492,7 @@ def build_video(
     slow=3.0,
     guide=True,
     cues=True,
+    junction_pano=True,
     road_only=True,
     allow_pano=False,
     max_frames=0,
@@ -457,10 +529,25 @@ def build_video(
         old.unlink()
 
     # 1. candidates near every sample point, then one consistent chain of images
-    cands = []
+    cands, pano_pool, dl_cache = [], {}, {}
+
+    def get(url):   # panoramas are shared by several frames: download once
+        if url not in dl_cache:
+            dl_cache[url] = fetch_bytes(url)
+        return dl_cache[url]
+
     for i, (pt, hd) in enumerate(pts):
         check()
-        cands.append(candidates_for(nearby_images(token, pt, radius), pt, hd, max_angle, allow_pano, align))
+        imgs = nearby_images(token, pt, radius)
+        cands.append(candidates_for(imgs, pt, hd, max_angle, allow_pano, align))
+        if junction_pano:
+            for im in imgs:
+                g = im.get("computed_geometry")
+                if (im.get("is_pano") and g and im.get("computed_compass_angle") is not None and im.get("thumb_2048_url")
+                        and im["id"] not in pano_pool):
+                    pano_pool[im["id"]] = {"id": im["id"], "lat": g["coordinates"][1], "lon": g["coordinates"][0],
+                                           "ang": im["computed_compass_angle"], "seq": im.get("sequence"),
+                                           "url2048": im["thumb_2048_url"], "url": im.get("thumb_original_url") or im["thumb_2048_url"]}
         time.sleep(delay)
         report("search", i + 1, len(pts))
     picks = choose_path(cands)
@@ -492,13 +579,14 @@ def build_video(
             for c in chosen:
                 if c.get("cue") and GUIDE_FROM_M <= c["cue"]["dist"] <= GUIDE_TO_M:
                     c["guide"] = route_ahead(fine, (c["lat"], c["lon"]))
+    junctions = apply_junction_panos(chosen, pano_pool, fine, maneuvers, guide, get) if junction_pano else 0
     sequences = len({c["seq"] or c["id"] for c in chosen})
 
     # 2. download each image and align it to the route direction
     files, durs, carry = [], [], 0.0   # a failed download hands its screen time to its neighbour
     for i, c in enumerate(chosen):
         check()
-        data = fetch_bytes(c["url"])
+        data = get(c["url"]) if c["pano"] else fetch_bytes(c["url"])
         if data is None:
             gaps += 1
             if durs:
@@ -525,4 +613,4 @@ def build_video(
     report("encode", 0, 0, f"{n} frames")
     seconds = encode_video(files, durs, fps, smooth, output, check, report)
     shutil.rmtree(work, ignore_errors=True)
-    return {"frames": n, "gaps": gaps, "distance_m": round(dist), "points": len(pts), "sequences": sequences, "view_skipped": len(bad), "seconds": round(seconds, 1), "turns": len(maneuvers)}
+    return {"frames": n, "gaps": gaps, "distance_m": round(dist), "points": len(pts), "sequences": sequences, "view_skipped": len(bad), "junctions": junctions, "seconds": round(seconds, 1), "turns": len(maneuvers)}

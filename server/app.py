@@ -141,6 +141,7 @@ def create_job():
             align=bool(b.get("align", True)),
             cues=bool(b.get("cues", True)),
             road_only=bool(b.get("road", True)),
+            junction_pano=bool(b.get("jpano", True)),
         )
     except ValueError as e:
         return jsonify(error=str(e)), 400

@@ -355,11 +355,63 @@ def looks_at_sky(stats):
     return stats[0] >= SKY_TOTAL or stats[1] >= SKY_BOTTOM
 
 
-def is_sky_image(data):
-    """True if the picture is mostly sky (camera pitched up). Undecodable data counts as fine."""
+ROAD_ZS, ROAD_XS, ROAD_MIN = (5, 8, 12, 17, 23, 30), (-2, -1, 0, 1, 2), 0.45
+
+
+def road_like(r, g, b):
+    """Grey / tan, not too dark or blown out, not sky blue, not vegetation green."""
+    mx, mn = max(r, g, b), min(r, g, b)
+    lum = 0.299 * r + 0.587 * g + 0.114 * b
+    sat = (mx - mn) / max(1, mx)
+    return sat < 0.32 and 12 < lum < 215 and not (b > r + 15 and b >= g) and not (g > r + 12 and g > b + 12)
+
+
+def road_score(arr, cand, ahead):
+    """Is the road where the route should be? Project the next 5-30 m of the route (+-2 m either side) into this picture
+    with its own position, heading and focal length and return the share of that ribbon that looks like road surface.
+    A camera that points at the sky, a wall or the car in front, or is tilted so far that the road is out of frame,
+    scores low. None = cannot tell."""
+    h, w = arr.shape[:2]
+    f = (w / 2) / math.tan(math.radians(hfov_of(cand.get("cam"), w, h)) / 2)
+    cam = (cand["lat"], cand["lon"])
+    g = []
+    for p in ahead:
+        d = _dist(cam, p)
+        rel = math.radians(signed_diff(_bearing(cam, p), cand["ang"]))
+        if d * math.cos(rel) > 0:
+            g.append((d * math.sin(rel), d * math.cos(rel)))
+
+    def x_at(Z):   # lateral offset of the route centre line at depth Z
+        for (x0, z0), (x1, z1) in zip(g, g[1:]):
+            if (z0 - Z) * (z1 - Z) <= 0 and z1 != z0:
+                return x0 + (x1 - x0) * (Z - z0) / (z1 - z0)
+        return None
+
+    total = road = levels = 0
+    for Z in ROAD_ZS:
+        X0 = x_at(Z)
+        if X0 is None:
+            continue
+        levels += 1
+        for dx in ROAD_XS:
+            total += 1
+            x, y = round(w / 2 + f * (X0 + dx) / Z), round(h / 2 + f * CAM_H / Z)
+            if 0 <= x < w and 0 <= y < h and road_like(*(float(v) for v in arr[y, x, :3])):   # outside = no road here
+                road += 1
+    return road / total if levels >= 3 else None
+
+
+def view_check(data, cand, ahead):
+    """{"sky": bool, "road": share or None} for a small thumbnail; None if it cannot be decoded."""
     try:
         img = Image.open(io.BytesIO(data)).convert("RGB")
     except Exception:
-        return False
-    w, h = 96, max(16, round(96 * img.height / img.width))
-    return looks_at_sky(sky_stats(np.asarray(img.resize((w, h), Image.BOX))))
+        return None
+    small = np.asarray(img.resize((96, max(16, round(96 * img.height / img.width))), Image.BOX))
+    return {"sky": looks_at_sky(sky_stats(small)),
+            "road": road_score(np.asarray(img), cand, ahead) if cand.get("ang") is not None else None}
+
+
+def unusable(v):
+    """The road is not visible in this view (mostly sky, or the route ribbon does not look like road)."""
+    return bool(v) and (v["sky"] or (v["road"] is not None and v["road"] < ROAD_MIN))

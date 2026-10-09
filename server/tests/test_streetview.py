@@ -330,32 +330,83 @@ def test_sky_check_rejects_pictures_of_the_sky_and_keeps_street_views():
         assert _sky_verdict(_scene(layers)), name
 
 
-def test_undecodable_thumbnail_is_not_treated_as_sky():
-    assert align.is_sky_image(b"not an image") is False
+def _road_view(cy, *, road=True, sky="#8fb8e8", ground="#5b7f3a", wall=None, car=False, w=256, h=192):
+    """A synthetic street view seen by a level camera (cam=[0.8], 1.6 m up) with the horizon at row `cy`."""
+    from PIL import Image, ImageDraw
+    import numpy as np
+    f = (w / 2) / math.tan(math.atan(0.5 / 0.8))
+    im = Image.new("RGB", (w, h), sky)
+    d = ImageDraw.Draw(im)
+    if cy < h:
+        d.rectangle([0, cy, w, h], fill=ground)
+    if wall:
+        d.rectangle([0, cy - 60, w, h], fill=wall)
+    if road:
+        P = lambda X, Z: (w / 2 + f * X / Z, cy + f * 1.6 / Z)
+        d.polygon([P(-4, 2.2), P(4, 2.2), P(4, 120), P(-4, 120)], fill=(109, 109, 112))
+    if car:
+        d.rectangle([w / 2 - 45, cy + 8, w / 2 + 45, cy + 58], fill=(176, 40, 42))
+    arr = np.asarray(im).astype(np.float32) + np.random.default_rng(1).uniform(-5, 5, (h, w, 1))
+    return np.clip(arr, 0, 255).astype(np.uint8)
 
 
-def test_build_video_replaces_sky_images(tmp_path, monkeypatch):
+def test_road_score_needs_the_road_where_the_route_is():
+    fine = _ground([(0, z) for z in range(0, 201, 2)])
+    cand = {"lat": 25.0, "lon": 121.0, "ang": 0.0, "cam": [0.8, 0, 0]}
+    ahead = core.route_ahead(fine, (25.0, 121.0), 45)
+    score = lambda arr: align.road_score(arr, cand, ahead)
+    assert score(_road_view(96)) > 0.9                                   # level camera, road ahead
+    assert score(_road_view(96, sky="#d8d8dc")) > 0.9                    # overcast sky
+    assert score(_road_view(96 - 55)) > 0.9                              # tilted down: the road is still there
+    assert score(_road_view(96 + 75)) < align.ROAD_MIN                   # tilted up: the road drops out of frame
+    assert score(_road_view(96 + 130)) < align.ROAD_MIN
+    assert score(_road_view(96, road=False, ground="#8fb8e8")) < align.ROAD_MIN     # nothing but sky
+    assert score(_road_view(96, road=False, wall="#964b3c")) < align.ROAD_MIN       # a wall
+    assert score(_road_view(96, road=False)) < align.ROAD_MIN                       # grass only
+    assert score(_road_view(96, car=True)) < align.ROAD_MIN                         # a car blocking the road
+    assert align.road_score(_road_view(96), cand, [(25.0, 121.0), (25.0001, 121.0)]) is None   # route too short to judge
+
+
+def test_view_check_combines_sky_and_road():
+    import io
+    from PIL import Image
+    fine = _ground([(0, z) for z in range(0, 201, 2)])
+    cand = {"lat": 25.0, "lon": 121.0, "ang": 0.0, "cam": [0.8, 0, 0]}
+    ahead = core.route_ahead(fine, (25.0, 121.0), 45)
+
+    def check(arr, c=cand):
+        b = io.BytesIO()
+        Image.fromarray(arr).save(b, "PNG")
+        return align.view_check(b.getvalue(), c, ahead)
+    assert not align.unusable(check(_road_view(96)))
+    assert align.unusable(check(_road_view(96, road=False, ground="#8fb8e8")))
+    assert align.unusable(check(_road_view(96 + 75)))
+    assert not align.unusable(check(_road_view(96), {**cand, "ang": None}))                    # unknown heading: cannot judge, keep
+    assert align.view_check(b"not an image", cand, ahead) is None and not align.unusable(None)  # undecodable: keep
+
+
+def test_build_video_replaces_images_without_a_visible_road(tmp_path, monkeypatch):
     import io
     import shutil
     from PIL import Image
     if not shutil.which("ffmpeg"):
         pytest.skip("ffmpeg missing")
 
-    def jpg(arr):
+    def png(arr):
         b = io.BytesIO()
-        Image.fromarray(arr).save(b, "JPEG")
+        Image.fromarray(arr).save(b, "JPEG", quality=92)
         return b.getvalue()
-    sky = jpg(_scene([(0, 1, "sky", 0, 0)], 320, 240))
-    ok = jpg(_scene([(0, .4, "sky", 0, 0), (.4, .55, "flat", (120, 110, 100), 90), (.55, 1, "flat", (110, 110, 112), 40)], 320, 240))
-    main = jpg(_scene([(0, 1, "flat", (110, 110, 112), 40)], 800, 600))
-    path = [(25.0, 121.0), (25.002, 121.0)]
+    sky = png(_road_view(96, road=False, ground="#8fb8e8"))
+    ok = png(_road_view(96))
+    main = png(_road_view(96, w=800, h=600))
+    path = _ground([(0, 0), (0, 222)])
     monkeypatch.setattr(core, "get_route", lambda *a, **k: (path, 222, []))
 
     def near(token, pt, radius):
         mk = lambda i, dla, thumb: {"id": f"{i}{pt[0]:.6f}", "sequence": "S", "captured_at": 10**12, "camera_parameters": [0.8, 0, 0],
                                     "computed_geometry": {"coordinates": [121.0, pt[0] + dla]}, "computed_compass_angle": 0,
                                     "is_pano": False, "thumb_256_url": thumb, "thumb_2048_url": "main"}
-        return [mk("sky", 0.00001, "sky"), mk("ok", 0.00005, "ok")]     # the sky picture is the closer one
+        return [mk("sky", 0.00001, "sky"), mk("ok", 0.00005, "ok")]     # the picture without a road is the closer one
     store = {"sky": sky, "ok": ok, "main": main}
     monkeypatch.setattr(core, "nearby_images", near)
     monkeypatch.setattr(core, "fetch_bytes", lambda u: store[u])
@@ -363,10 +414,10 @@ def test_build_video_replaces_sky_images(tmp_path, monkeypatch):
     real = align.align_frame_view
     monkeypatch.setattr(align, "align_frame_view", lambda data, meta, a=True: (used.append(meta["id"][:2]), real(data, meta, a))[1])
     r = core.build_video("t", (0, 0), (1, 1), tmp_path / "o.mp4", tmp_path / "f", delay=0)
-    assert set(used) == {"ok"} and r["sky_skipped"] == r["frames"] > 0
+    assert set(used) == {"ok"} and r["view_skipped"] == r["frames"] > 0
     used.clear()
-    r = core.build_video("t", (0, 0), (1, 1), tmp_path / "o2.mp4", tmp_path / "f2", delay=0, avoid_sky=False)
-    assert set(used) == {"sk"} and r["sky_skipped"] == 0                # filter off: the closer (sky) picture wins
+    r = core.build_video("t", (0, 0), (1, 1), tmp_path / "o2.mp4", tmp_path / "f2", delay=0, road_only=False)
+    assert set(used) == {"sk"} and r["view_skipped"] == 0               # filter off: the closer picture wins
 
 
 @pytest.fixture

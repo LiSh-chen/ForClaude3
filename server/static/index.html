@@ -83,7 +83,7 @@
     <div class="check"><input type="checkbox" id="smooth"><span>平滑（混合插幀，較慢）</span></div>
     <div class="check"><input type="checkbox" id="guide" checked><span>在叉路 / 轉彎前用綠色路徑標示要走的路</span></div>
     <div class="check"><input type="checkbox" id="cues" checked><span>在轉彎 / 叉路處顯示方向提示文字</span></div>
-    <div class="check"><input type="checkbox" id="sky" checked><span>避開朝向天空的街景（建議）</span></div>
+    <div class="check"><input type="checkbox" id="road" checked><span>只用看得到道路的街景：避開朝天空、牆面或被擋住的畫面（建議）</span></div>
     <div class="check"><input type="checkbox" id="align" checked><span>路線對齊：讓道路方向固定在畫面中央（建議）</span></div>
     <div class="check"><input type="checkbox" id="allow_pano"><span>使用 360° 全景圖並轉正（解析度較低）</span></div>
   </details>
@@ -195,7 +195,7 @@ $('go').onclick = async () => {
   if (token) store.set('mly_token', token);
   const body = { start:state.start, end:state.end, profile:$('profile').value, token,
     step:+$('step').value, radius:+$('radius').value, max_angle:+$('max_angle').value, fps:+$('fps').value, slow:+$('slow').value, guide:$('guide').checked,
-    max_frames:+$('max_frames').value, smooth:$('smooth').checked, allow_pano:$('allow_pano').checked, align:$('align').checked, cues:$('cues').checked, sky:$('sky').checked };
+    max_frames:+$('max_frames').value, smooth:$('smooth').checked, allow_pano:$('allow_pano').checked, align:$('align').checked, cues:$('cues').checked, road:$('road').checked };
   const r = await fetch('/api/jobs', { method:'POST', headers:{'Content-Type':'application/json'}, body:JSON.stringify(body) });
   const d = await r.json();
   if (!r.ok) { $('formErr').textContent = d.error; return; }
@@ -220,7 +220,7 @@ function renderJob(j) {
     c.onclick = () => fetch(`/api/jobs/${j.id}/cancel`, { method:'POST' });
     box.append(c);
   } else if (j.status === 'done') {
-    box.append(el('div', { className:'meta ok' }, `完成：${j.result.frames} 張（${j.result.sequences} 段拍攝，影片 ${Math.round(j.result.seconds)} 秒，${j.result.sky_skipped ? '避開 ' + j.result.sky_skipped + ' 張朝天空的照片，' : ''}${j.result.turns} 個轉彎/叉路減速），${(j.result.distance_m/1000).toFixed(1)} 公里，${j.result.gaps} 處無影像`));
+    box.append(el('div', { className:'meta ok' }, `完成：${j.result.frames} 張（${j.result.sequences} 段拍攝，影片 ${Math.round(j.result.seconds)} 秒，${j.result.view_skipped ? '避開 ' + j.result.view_skipped + ' 張看不到道路的照片，' : ''}${j.result.turns} 個轉彎/叉路減速），${(j.result.distance_m/1000).toFixed(1)} 公里，${j.result.gaps} 處無影像`));
     const v = el('video', { controls:true, preload:'metadata', src:`/api/jobs/${j.id}/video` });
     box.append(v, el('div', { className:'links' }, el('a', { href:`/api/jobs/${j.id}/video?download=1`, textContent:'下載 mp4' })));
   } else {

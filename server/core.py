@@ -421,7 +421,7 @@ def build_video(
     slow=3.0,
     guide=True,
     cues=True,
-    avoid_sky=True,
+    road_only=True,
     allow_pano=False,
     max_frames=0,
     delay=0.1,
@@ -464,17 +464,18 @@ def build_video(
         time.sleep(delay)
         report("search", i + 1, len(pts))
     picks = choose_path(cands)
-    bad = set()   # images that mostly show sky: drop them and choose again from the other candidates
-    if avoid_sky:
+    fine = [p for p, _ in resample(path, 2)]
+    bad = set()   # images where the road is not visible: drop them and choose again from the other candidates
+    if road_only:
         memo = {}
         for _ in range(4):
             todo = {p["id"]: p for p in picks if p and not p["pano"] and p["thumb"] and p["id"] not in memo}
             for n, p in enumerate(todo.values(), 1):
                 check()
                 data = fetch_bytes(p["thumb"])
-                memo[p["id"]] = bool(data) and aligner.is_sky_image(data)
+                memo[p["id"]] = aligner.view_check(data, p, route_ahead(fine, (p["lat"], p["lon"]), 45)) if data else None
                 report("check", n, len(todo))
-            fresh = {p["id"] for p in picks if p and memo.get(p["id"]) and p["id"] not in bad}
+            fresh = {p["id"] for p in picks if p and aligner.unusable(memo.get(p["id"])) and p["id"] not in bad}
             if not fresh:
                 break
             bad |= fresh
@@ -486,7 +487,6 @@ def build_video(
             "Too few images along this route. Try a larger search radius / angle, or a better-covered road."
         )
     if cues or guide:   # cue + path are worked out from where each image was really taken
-        fine = [p for p, _ in resample(path, 2)]
         attach_cues(chosen, fine, maneuvers)
         if guide:
             for c in chosen:
@@ -525,4 +525,4 @@ def build_video(
     report("encode", 0, 0, f"{n} frames")
     seconds = encode_video(files, durs, fps, smooth, output, check, report)
     shutil.rmtree(work, ignore_errors=True)
-    return {"frames": n, "gaps": gaps, "distance_m": round(dist), "points": len(pts), "sequences": sequences, "sky_skipped": len(bad), "seconds": round(seconds, 1), "turns": len(maneuvers)}
+    return {"frames": n, "gaps": gaps, "distance_m": round(dist), "points": len(pts), "sequences": sequences, "view_skipped": len(bad), "seconds": round(seconds, 1), "turns": len(maneuvers)}

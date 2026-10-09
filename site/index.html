@@ -77,6 +77,7 @@
     <div class="check"><input type="checkbox" id="guide" checked><span>在叉路 / 轉彎前用綠色路徑標示要走的路</span></div>
     <div class="check"><input type="checkbox" id="cues" checked><span>在轉彎 / 叉路處顯示方向提示文字</span></div>
     <div class="check"><input type="checkbox" id="fade" checked><span>影像間漸變（較順）</span></div>
+    <div class="check"><input type="checkbox" id="sky" checked><span>避開朝向天空的街景（建議）</span></div>
     <div class="check"><input type="checkbox" id="align" checked><span>路線對齊：讓道路方向固定在畫面中央（建議）</span></div>
     <div class="check"><input type="checkbox" id="pano"><span>使用 360° 全景圖並轉正（可對準任何方向，但解析度較低）</span></div>
   </details>
@@ -138,7 +139,7 @@ function smoothHeadings(pts, step, windowM) {
 const signedDiff = (a, b) => ((a - b + 540) % 360) - 180;   // a-b in (-180,180]
 
 /* Candidate images near one sample point, cheapest first. */
-function candidatesFor(images, pt, hd, o, K = 6) {
+function candidatesFor(images, pt, hd, o, K = 8) {
   const out = [];
   for (const im of images) {
     const g = im.computed_geometry, ang = im.computed_compass_angle, pano = !!im.is_pano;
@@ -149,7 +150,7 @@ function candidatesFor(images, pt, hd, o, K = 6) {
     if (diff > o.maxAngle) continue;
     const d = dist(pt, [g.coordinates[1], g.coordinates[0]]);
     out.push({ id:im.id, lat:g.coordinates[1], lon:g.coordinates[0], seq:im.sequence || null, t:im.captured_at || 0, ang:pano ? null : ang, pano,
-               cam:im.camera_parameters || null, url, hd, u:d + diff * (o.align ? 0.2 : 0.5) });
+               cam:im.camera_parameters || null, url, thumb:im.thumb_256_url || null, hd, u:d + diff * (o.align ? 0.2 : 0.5) });
   }
   return out.sort((x, y) => x.u - y.u).slice(0, K);
 }
@@ -184,6 +185,44 @@ function choosePath(cands) {
   let j = prev.reduce((m, n, k) => n.cost < prev[m].cost ? k : m, 0);
   for (let k = layers.length - 1; k >= 0; k--) { picks[idx[k]] = layers[k][j].c; j = layers[k][j].from; }
   return picks;
+}
+
+/* ---------- sky check: skip images where the camera is pointing up at the sky ---------- */
+const SKY_TOTAL = 0.6, SKY_BOTTOM = 0.25;   // share of the picture that is sky / share of its lower half that is sky
+/* Cells (8x8 px of a ~96 px wide copy) that are smooth and blue or white are sky-like; sky is only what connects to the
+   top edge through such cells, so smooth bright pavement at the bottom of a normal view does not count. */
+function skyStats(d, w, h) {
+  const C = 8, cols = Math.floor(w / C), rows = Math.floor(h / C), like = new Array(cols * rows).fill(false);
+  for (let cy = 0; cy < rows; cy++) for (let cx = 0; cx < cols; cx++) {
+    let r = 0, g = 0, b = 0, l = 0, l2 = 0, c = 0, c2 = 0;
+    for (let y = 0; y < C; y++) for (let x = 0; x < C; x++) {
+      const i = ((cy * C + y) * w + cx * C + x) * 4, lum = .299 * d[i] + .587 * d[i+1] + .114 * d[i+2];
+      const bl = d[i+2] - d[i]; r += d[i]; g += d[i+1]; b += d[i+2]; l += lum; l2 += lum * lum; c += bl; c2 += bl * bl;
+    }
+    const n = C * C, mr = r / n, mg = g / n, mb = b / n, ml = l / n, sd = Math.sqrt(Math.max(0, l2 / n - ml * ml)), sc = Math.sqrt(Math.max(0, c2 / n - (c / n) ** 2));   // sd = brightness spread, sc = colour spread
+    const mx = Math.max(mr, mg, mb), sat = (mx - Math.min(mr, mg, mb)) / Math.max(1, mx);
+    like[cy * cols + cx] = sd < 7 && sc < 12 && ((mb > mr + 10 && mb >= mg - 5 && ml > 100) || (ml > 150 && sat < .2));
+  }
+  const sky = new Array(cols * rows).fill(false), stack = [];
+  for (let cx = 0; cx < cols; cx++) if (like[cx]) { sky[cx] = true; stack.push(cx); }
+  while (stack.length) {
+    const i = stack.pop(), x = i % cols, y = (i - x) / cols;
+    for (const [nx, ny] of [[x-1, y], [x+1, y], [x, y-1], [x, y+1]]) {
+      if (nx < 0 || ny < 0 || nx >= cols || ny >= rows) continue;
+      const j = ny * cols + nx; if (like[j] && !sky[j]) { sky[j] = true; stack.push(j); }
+    }
+  }
+  let total = 0, low = 0; const half = Math.floor(rows / 2);
+  for (let i = 0; i < sky.length; i++) if (sky[i]) { total++; if (Math.floor(i / cols) >= half) low++; }
+  return { total:total / (rows * cols), bottom:low / Math.max(1, (rows - half) * cols) };
+}
+const looksAtSky = st => st.total >= SKY_TOTAL || st.bottom >= SKY_BOTTOM;
+async function skyCheck(url) {
+  const blob = await fetchBlob(url); if (!blob) return false;   // cannot tell: keep it
+  const bm = await createImageBitmap(blob), W = 96, H = Math.max(16, Math.round(W * bm.height / bm.width));
+  const cv = document.createElement('canvas'); cv.width = W; cv.height = H;
+  const ctx = cv.getContext('2d'); ctx.drawImage(bm, 0, 0, W, H); bm.close();
+  return looksAtSky(skyStats(ctx.getImageData(0, 0, W, H).data, W, H));
 }
 
 /* ---------- frame alignment: keep the road direction in the middle of every frame ---------- */
@@ -508,7 +547,7 @@ function estimateSeconds(r) {
 }
 function readOpts() {
   return { step:+$('step').value || 10, radius:+$('radius').value, maxAngle:+$('maxAngle').value, fps:+$('fps').value || 4,
-           slow:+$('slow').value || 1, guide:$('guide').checked, maxFrames:+$('maxFrames').value, fade:$('fade').checked, pano:$('pano').checked, align:$('align').checked, cues:$('cues').checked };
+           slow:+$('slow').value || 1, guide:$('guide').checked, maxFrames:+$('maxFrames').value, fade:$('fade').checked, pano:$('pano').checked, align:$('align').checked, cues:$('cues').checked, sky:$('sky').checked };
 }
 function drawRoutes(fit) {
   lines.forEach(l => l.remove()); lines = [];
@@ -571,7 +610,7 @@ async function fetchJSON(url, tries = 4) {
 async function nearby(token, pt, radius) {
   const dlat = radius / 111320, dlon = radius / (111320 * Math.max(Math.cos(rad(pt[0])), .01));
   const bbox = [pt[1]-dlon, pt[0]-dlat, pt[1]+dlon, pt[0]+dlat].join(',');
-  const f = 'id,computed_geometry,computed_compass_angle,thumb_1024_url,thumb_2048_url,is_pano,sequence,captured_at,camera_parameters';
+  const f = 'id,computed_geometry,computed_compass_angle,thumb_256_url,thumb_1024_url,thumb_2048_url,is_pano,sequence,captured_at,camera_parameters';
   const d = await fetchJSON(`https://graph.mapillary.com/images?access_token=${encodeURIComponent(token)}&fields=${f}&bbox=${bbox}&limit=100`);
   return d ? d.data || [] : [];
 }
@@ -603,7 +642,21 @@ async function generate() {
       cands[i] = candidatesFor(await nearby(token, p.pt, o.radius), p.pt, p.hd, o);
       setStatus(`搜尋街景 ${++done}/${pts.length}`, 25 * done / pts.length);
     });
-    const picks = choosePath(cands);   // one consistent chain of images, not the nearest one per point
+    let picks = choosePath(cands);   // one consistent chain of images, not the nearest one per point
+    const bad = new Set();           // images that mostly show sky: drop them and choose again from the other candidates
+    if (o.sky) {
+      const memo = new Map();
+      for (let round = 0; round < 4; round++) {
+        const todo = [...new Map(picks.filter(p => p && !p.pano && p.thumb && !memo.has(p.id)).map(p => [p.id, p])).values()];
+        done = 0;
+        await pool(todo, 6, async p => { memo.set(p.id, await skyCheck(p.thumb)); setStatus(`檢查畫面 ${++done}/${todo.length}`, 25); });
+        const fresh = picks.filter(p => p && memo.get(p.id) && !bad.has(p.id));
+        if (!fresh.length) break;
+        fresh.forEach(p => bad.add(p.id));
+        picks = choosePath(cands.map(l => l.filter(c => !bad.has(c.id))));
+      }
+      picks = picks.map(p => p && bad.has(p.id) ? null : p);
+    }
     // each chosen image stands for the stretch of road it covers; its screen time follows the pace weights
     const durs = paceDurations(pts, S.routes[S.sel].maneuvers, o.step, o.slow);
     const chosen = []; let last = null, gaps = 0, lead = 0;
@@ -618,7 +671,7 @@ async function generate() {
       attachCues(chosen, fine, S.routes[S.sel].maneuvers);
       if (o.guide) for (const f of chosen) if (f.cue && f.cue.dist >= GUIDE_FROM_M && f.cue.dist <= GUIDE_TO_M) f.guide = routeAhead(fine, [f.lat, f.lon]);
     }
-    const seqs = new Set(chosen.map(c => c.seq || c.id)).size;
+    const seqs = new Set(chosen.map(c => c.seq || c.id)).size, skipped = bad.size;
 
     // 2. download images (kept as compressed blobs to save memory)
     const raw = new Array(chosen.length); done = 0;
@@ -642,7 +695,7 @@ async function generate() {
 
     // 4. render + record
     const video = await record(frames, ok.map(x => x.m.dur), o, (i, n) => setStatus(`合成影片 ${i}/${n}（請保持此分頁在前景）`, 70 + 30 * i / n));
-    showResult(video, frames.length, gaps, seqs);
+    showResult(video, frames.length, gaps, seqs, skipped);
   } catch (e) {
     if (e instanceof Cancelled) setStatus('已取消'); else fail(e.message || String(e));
   } finally {
@@ -698,11 +751,11 @@ async function record(frames, durs, o, onProgress) {
   return new Blob(chunks, { type:mime.split(';')[0] });
 }
 
-function showResult(blob, n, gaps, seqs) {
+function showResult(blob, n, gaps, seqs, skipped) {
   const url = URL.createObjectURL(blob), ext = blob.type === 'video/mp4' ? 'mp4' : 'webm';
   const v = Object.assign(document.createElement('video'), { src:url, controls:true });
   const a = Object.assign(document.createElement('a'), { href:url, download:`route-streetview.${ext}`, className:'dl', textContent:`下載影片（.${ext}，${(blob.size/1048576).toFixed(1)} MB）` });
-  const m = Object.assign(document.createElement('div'), { className:'hint ok', textContent:`完成：${n} 張影像（來自 ${seqs} 段拍攝），${gaps} 處沿途沒有街景` });
+  const m = Object.assign(document.createElement('div'), { className:'hint ok', textContent:`完成：${n} 張影像（來自 ${seqs} 段拍攝），${gaps} 處沿途沒有街景${skipped ? '，已避開 ' + skipped + ' 張朝天空的照片' : ''}` });
   $('result').replaceChildren(m, v, document.createElement('br'), a);
   setStatus('');
 }

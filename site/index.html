@@ -77,7 +77,7 @@
     <div class="check"><input type="checkbox" id="guide" checked><span>在叉路 / 轉彎前用綠色路徑標示要走的路</span></div>
     <div class="check"><input type="checkbox" id="cues" checked><span>在轉彎 / 叉路處顯示方向提示文字</span></div>
     <div class="check"><input type="checkbox" id="fade" checked><span>影像間漸變（較順）</span></div>
-    <div class="check"><input type="checkbox" id="sky" checked><span>避開朝向天空的街景（建議）</span></div>
+    <div class="check"><input type="checkbox" id="road" checked><span>只用看得到道路的街景：避開朝天空、牆面或被擋住的畫面（建議）</span></div>
     <div class="check"><input type="checkbox" id="align" checked><span>路線對齊：讓道路方向固定在畫面中央（建議）</span></div>
     <div class="check"><input type="checkbox" id="pano"><span>使用 360° 全景圖並轉正（可對準任何方向，但解析度較低）</span></div>
   </details>
@@ -217,13 +217,49 @@ function skyStats(d, w, h) {
   return { total:total / (rows * cols), bottom:low / Math.max(1, (rows - half) * cols) };
 }
 const looksAtSky = st => st.total >= SKY_TOTAL || st.bottom >= SKY_BOTTOM;
-async function skyCheck(url) {
-  const blob = await fetchBlob(url); if (!blob) return false;   // cannot tell: keep it
-  const bm = await createImageBitmap(blob), W = 96, H = Math.max(16, Math.round(W * bm.height / bm.width));
-  const cv = document.createElement('canvas'); cv.width = W; cv.height = H;
-  const ctx = cv.getContext('2d'); ctx.drawImage(bm, 0, 0, W, H); bm.close();
-  return looksAtSky(skyStats(ctx.getImageData(0, 0, W, H).data, W, H));
+/* Is the road where the route should be? Project the next 5-30 m of the route (+-2 m either side) into this picture with its
+   own position, heading and focal length, and see how much of that ribbon looks like road surface. A camera that points at
+   the sky, a wall or the car in front, or sits tilted so far that the road is out of frame, scores low. null = cannot tell. */
+const ROAD_ZS = [5, 8, 12, 17, 23, 30], ROAD_XS = [-2, -1, 0, 1, 2], ROAD_MIN = 0.45;
+function roadLike(r, g, b) {   // grey / tan, not too dark or blown out, not sky blue, not vegetation green
+  const mx = Math.max(r, g, b), mn = Math.min(r, g, b), lum = .299 * r + .587 * g + .114 * b, sat = (mx - mn) / Math.max(1, mx);
+  return sat < .32 && lum > 12 && lum < 215 && !(b > r + 15 && b >= g) && !(g > r + 12 && g > b + 12);
 }
+function roadScore(data, w, h, c, fine) {
+  const view = { cx:w / 2, cy:h / 2, f:(w / 2) / Math.tan(rad(hfovOf(c, w, h)) / 2), heading:c.ang }, cam = [c.lat, c.lon];
+  const g = routeAhead(fine, cam, 45).map(p => {
+    const d = dist(cam, p), rel = rad(signedDiff(bearing(cam, p), view.heading)); return [d * Math.sin(rel), d * Math.cos(rel)];
+  }).filter(q => q[1] > 0);
+  const xAt = Z => {   // lateral offset of the route centre line at depth Z
+    for (let i = 1; i < g.length; i++) {
+      const [x0, z0] = g[i-1], [x1, z1] = g[i];
+      if ((z0 - Z) * (z1 - Z) <= 0 && z1 !== z0) return x0 + (x1 - x0) * (Z - z0) / (z1 - z0);
+    }
+    return null;
+  };
+  let total = 0, road = 0, levels = 0;
+  for (const Z of ROAD_ZS) {
+    const X0 = xAt(Z); if (X0 == null) continue; levels++;
+    for (const dx of ROAD_XS) {
+      total++;
+      const x = Math.round(view.cx + view.f * (X0 + dx) / Z), y = Math.round(view.cy + view.f * CAM_H / Z);
+      if (x < 0 || y < 0 || x >= w || y >= h) continue;   // ribbon outside the picture counts as "no road here"
+      const i = (y * w + x) * 4; if (roadLike(data[i], data[i+1], data[i+2])) road++;
+    }
+  }
+  return levels >= 3 ? road / total : null;
+}
+async function viewCheck(c, fine) {
+  const blob = await fetchBlob(c.thumb); if (!blob) return null;   // cannot tell: keep it
+  const bm = await createImageBitmap(blob), w = bm.width, h = bm.height;
+  const cv = document.createElement('canvas'); cv.width = w; cv.height = h;
+  const ctx = cv.getContext('2d'); ctx.drawImage(bm, 0, 0);
+  const SW = 96, SH = Math.max(16, Math.round(SW * h / w)), sv = document.createElement('canvas'); sv.width = SW; sv.height = SH;
+  const sc = sv.getContext('2d'); sc.drawImage(bm, 0, 0, SW, SH); bm.close();
+  return { sky:looksAtSky(skyStats(sc.getImageData(0, 0, SW, SH).data, SW, SH)),
+           road:c.ang == null ? null : roadScore(ctx.getImageData(0, 0, w, h).data, w, h, c, fine) };
+}
+const unusable = v => !!v && (v.sky || (v.road != null && v.road < ROAD_MIN));
 
 /* ---------- frame alignment: keep the road direction in the middle of every frame ---------- */
 const OW = 1280, OH = 720;
@@ -547,7 +583,7 @@ function estimateSeconds(r) {
 }
 function readOpts() {
   return { step:+$('step').value || 10, radius:+$('radius').value, maxAngle:+$('maxAngle').value, fps:+$('fps').value || 4,
-           slow:+$('slow').value || 1, guide:$('guide').checked, maxFrames:+$('maxFrames').value, fade:$('fade').checked, pano:$('pano').checked, align:$('align').checked, cues:$('cues').checked, sky:$('sky').checked };
+           slow:+$('slow').value || 1, guide:$('guide').checked, maxFrames:+$('maxFrames').value, fade:$('fade').checked, pano:$('pano').checked, align:$('align').checked, cues:$('cues').checked, road:$('road').checked };
 }
 function drawRoutes(fit) {
   lines.forEach(l => l.remove()); lines = [];
@@ -643,14 +679,15 @@ async function generate() {
       setStatus(`搜尋街景 ${++done}/${pts.length}`, 25 * done / pts.length);
     });
     let picks = choosePath(cands);   // one consistent chain of images, not the nearest one per point
-    const bad = new Set();           // images that mostly show sky: drop them and choose again from the other candidates
-    if (o.sky) {
+    const fine = fineRoute(S.routes[S.sel].path);
+    const bad = new Set();           // images where the road is not visible: drop them and choose again from the other candidates
+    if (o.road) {
       const memo = new Map();
       for (let round = 0; round < 4; round++) {
         const todo = [...new Map(picks.filter(p => p && !p.pano && p.thumb && !memo.has(p.id)).map(p => [p.id, p])).values()];
         done = 0;
-        await pool(todo, 6, async p => { memo.set(p.id, await skyCheck(p.thumb)); setStatus(`檢查畫面 ${++done}/${todo.length}`, 25); });
-        const fresh = picks.filter(p => p && memo.get(p.id) && !bad.has(p.id));
+        await pool(todo, 6, async p => { memo.set(p.id, await viewCheck(p, fine)); setStatus(`檢查畫面 ${++done}/${todo.length}`, 25); });
+        const fresh = picks.filter(p => p && unusable(memo.get(p.id)) && !bad.has(p.id));
         if (!fresh.length) break;
         fresh.forEach(p => bad.add(p.id));
         picks = choosePath(cands.map(l => l.filter(c => !bad.has(c.id))));
@@ -667,7 +704,6 @@ async function generate() {
     });
     if (chosen.length < 2) throw new Error('這條路線沿途幾乎沒有街景。試試放寬搜尋半徑 / 角度，或換一條路線。');
     if (o.cues || o.guide) {   // cue + path are worked out from where each image was really taken
-      const fine = fineRoute(S.routes[S.sel].path);
       attachCues(chosen, fine, S.routes[S.sel].maneuvers);
       if (o.guide) for (const f of chosen) if (f.cue && f.cue.dist >= GUIDE_FROM_M && f.cue.dist <= GUIDE_TO_M) f.guide = routeAhead(fine, [f.lat, f.lon]);
     }
@@ -755,7 +791,7 @@ function showResult(blob, n, gaps, seqs, skipped) {
   const url = URL.createObjectURL(blob), ext = blob.type === 'video/mp4' ? 'mp4' : 'webm';
   const v = Object.assign(document.createElement('video'), { src:url, controls:true });
   const a = Object.assign(document.createElement('a'), { href:url, download:`route-streetview.${ext}`, className:'dl', textContent:`下載影片（.${ext}，${(blob.size/1048576).toFixed(1)} MB）` });
-  const m = Object.assign(document.createElement('div'), { className:'hint ok', textContent:`完成：${n} 張影像（來自 ${seqs} 段拍攝），${gaps} 處沿途沒有街景${skipped ? '，已避開 ' + skipped + ' 張朝天空的照片' : ''}` });
+  const m = Object.assign(document.createElement('div'), { className:'hint ok', textContent:`完成：${n} 張影像（來自 ${seqs} 段拍攝），${gaps} 處沿途沒有街景${skipped ? '，已避開 ' + skipped + ' 張看不到道路的照片' : ''}` });
   $('result').replaceChildren(m, v, document.createElement('br'), a);
   setStatus('');
 }

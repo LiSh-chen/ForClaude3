@@ -1,6 +1,7 @@
 (function () {
   'use strict';
   const { FlipDetector, summarizeSession } = window.SleepFlip;
+  const TL = window.SleepTimeline;
   const $ = (s, el) => (el || document).querySelector(s);
   const WD = ['日', '一', '二', '三', '四', '五', '六'];
   const KEY_E = 'sleepdiary.entries', KEY_S = 'sleepdiary.session';
@@ -103,7 +104,8 @@
     Object.assign(e, {
       date, bedTime: hm(sum.bedAt), tryTime: hm(sum.tryAt), awakenings: sum.awakenings, awakeMin: sum.awakeMin,
       finalWake: hm(sum.finalWakeAt), getUp: hm(sum.getUpAt), _auto: ['bedTime', 'tryTime', 'awakenings', 'awakeMin', 'finalWake', 'getUp'],
-      _intervals: sum.intervals.map(i => [hm(i.from), hm(i.to)])
+      _intervals: sum.intervals.map(i => [hm(i.from), hm(i.to)]),
+      slots: TL.slotsFromSession(sum, date)
     });
     e.dayType = e.dayType || ([0, 6].includes(new Date(date + 'T00:00').getDay()) ? '休息日' : '工作日');
     all[date] = e; save(KEY_E, all); localStorage.removeItem(KEY_S);
@@ -140,43 +142,109 @@
     if ($('#bResume')) $('#bResume').onclick = () => { $('#night').classList.add('show'); lockScreen(); renderNight(); };
   }
 
-  const inp = (e, k, type, extra) => `<input type="${type}" data-k="${k}" value="${e[k] ?? ''}" ${extra || ''}>${(e._auto || []).includes(k) ? '' : ''}`;
+  const inp = (e, k, type, extra) => `<input type="${type}" data-k="${k}" value="${e[k] ?? ''}" ${extra || ''}>`;
   const auto = (e, k) => (e._auto || []).includes(k) ? '<span class="auto">自動帶入</span>' : '';
+  const BRUSHES = [['sleep', '😴 睡著'], ['inbed', '🛏 躺著醒著'], ['nap', '💤 小睡'], ['caffeine', '☕ 咖啡因'], ['alcohol', '🍺 酒'],
+    ['med', '💊 助眠藥'], ['light', '☀ 照光'], ['exercise', '🏃 運動'], ['erase', '⌫ 清除']];
+  const ICON = { caffeine: '☕', alcohol: '🍺', med: '💊', light: '☀', exercise: '🏃', nap: '💤' };
+  const DERIVED = ['bedTime', 'tryTime', 'latencyMin', 'awakenings', 'awakeMin', 'finalWake', 'getUp', 'napCount', 'napMin',
+    'alcoholLast', 'caffeineLast', 'medTime', 'light', 'exercise'];
+  const tl = { brush: null, anchor: null };
+
+  function drawGrid(e) {
+    const slots = e.slots || {}, rows = [];
+    for (let h = 0; h < 30; h++) {
+      const hour = (18 + h) % 24, cells = [0, 1].map(half => {
+        const i = h * 2 + half, a = slots[i] || [];
+        const st = a.find(k => ['sleep', 'inbed', 'nap'].includes(k)) || '';
+        const dark = (hour >= 22 || hour < 7) && !st ? ' dark' : '';
+        return `<div class="cell ${st}${dark}${tl.anchor === i ? ' anchor' : ''}" data-i="${i}">${a.filter(k => ICON[k] && k !== 'nap').map(k => ICON[k]).join('')}${st === 'nap' ? '' : ''}</div>`;
+      }).join('');
+      rows.push(`<div class="hr${hour === 0 ? ' day0' : ''}"><div class="lb">${String(hour).padStart(2, '0')}:00${hour === 0 ? '<br>當天' : ''}</div>${cells}</div>`);
+    }
+    $('#grid').innerHTML = rows.join('');
+    const sum = [];
+    const d = e.slots && Object.keys(e.slots).length ? TL.derive(e.slots) : null;
+    if (d) {
+      if (d.bedTime) sum.push(`上床 ${d.bedTime}`);
+      if (d.finalWake) sum.push(`最後醒來 ${d.finalWake}`);
+      if (d.getUp) sum.push(`起床 ${d.getUp}`);
+      if (d.latencyMin !== '') sum.push(`入睡約 ${d.latencyMin} 分`);
+      if (d.awakenings !== '') sum.push(`中途醒 ${d.awakenings} 次/${d.awakeMin} 分`);
+    }
+    $('#tlsum').textContent = sum.length ? '自動算出:' + sum.join(' · ') : '尚未標記。選一個活動,再點時段。';
+    $('#tlhelp').textContent = !tl.brush ? '① 先選上方一種活動' : tl.anchor == null ? '② 點「開始」的時段' : '③ 點「結束」的時段(只要一格就再點同一格)';
+  }
+
+  function tapSlot(i) {
+    if (!tl.brush) return;
+    if (tl.anchor == null) { tl.anchor = i; } else {
+      const all = entries(), cur = all[state.date] || { date: state.date };
+      cur.slots = TL.paint(cur.slots || {}, tl.brush, tl.anchor, i);
+      tl.anchor = null;
+      const d = TL.derive(cur.slots);
+      if (d) { Object.assign(cur, d); cur._auto = []; }
+      all[state.date] = cur; save(KEY_E, all);
+      DERIVED.forEach(k => { const el = document.querySelector(`[data-k="${k}"]`); if (el && d) el.value = d[k] ?? ''; });
+      cur._d = d;
+      drawGrid(cur); return;
+    }
+    drawGrid(entries()[state.date] || {});
+  }
+
   function viewDiary() {
     const e = entries()[state.date] || { date: state.date };
+    e._d = e.slots && Object.keys(e.slots).length ? TL.derive(e.slots) : null;
+    tl.anchor = null;
     const L = (t, k, body) => `<label>${t}${auto(e, k)}</label>${body}`;
     const iv = (e._intervals || []).map(i => `<li>${i[0]} → ${i[1]}</li>`).join('');
     $('#app').innerHTML = `
       <div class="card"><label>日期(表單欄位日期 = 起床當天)</label>
         <div class="row"><input type="date" id="dDate" value="${state.date}"><input disabled value="${wdOf(state.date)}"></div></div>
-      <div class="card"><h2>早上填寫(前一晚)</h2>
+      <div class="card"><h2>24 小時時間軸</h2>
+        <div class="brushes">${BRUSHES.map(([k, t]) => `<button type="button" data-b="${k}">${t}</button>`).join('')}</div>
+        <div class="tl-help" id="tlhelp"></div>
+        <div class="grid" id="grid"></div>
+        <div class="tlsum" id="tlsum"></div>
+        <p class="hint">每格 30 分鐘,從前一天 18:00 到當天 24:00。範圍內已全是同一活動時,再塗一次就是取消。</p>
+        ${iv ? `<p class="hint">感測器記到的夜間醒來(精確時間):</p><ul class="tl">${iv}</ul>` : ''}
+      </div>
+      <div class="card"><h2>主觀感受</h2>
         ${L('工作日或休息日', 'dayType', `<select data-k="dayType"><option></option><option ${e.dayType === '工作日' ? 'selected' : ''}>工作日</option><option ${e.dayType === '休息日' ? 'selected' : ''}>休息日</option></select>`)}
-        <div class="row"><div>${L('就寢時間(躺上床)', 'bedTime', inp(e, 'bedTime', 'time'))}</div><div>${L('嘗試入睡時間', 'tryTime', inp(e, 'tryTime', 'time'))}</div></div>
-        ${L('睡著所需時間(分鐘,憑感覺估計)', 'latencyMin', inp(e, 'latencyMin', 'number', 'min="0" inputmode="numeric"'))}
-        <div class="row"><div>${L('醒來次數(最後醒來不算)', 'awakenings', inp(e, 'awakenings', 'number', 'min="0" inputmode="numeric"'))}</div><div>${L('總計醒來時間(分鐘)', 'awakeMin', inp(e, 'awakeMin', 'number', 'min="0" inputmode="numeric"'))}</div></div>
-        ${iv ? `<p class="hint">感測器記到的夜間醒來:</p><ul class="tl">${iv}</ul>` : ''}
-        <div class="row"><div>${L('最後醒來時間', 'finalWake', inp(e, 'finalWake', 'time'))}</div><div>${L('起床時間', 'getUp', inp(e, 'getUp', 'time'))}</div></div>
         <label>自覺睡眠品質(1 非常差 2 差 3 普通 4 好 5 非常好)</label>
         <div class="stars">${[1, 2, 3, 4, 5].map(n => `<button type="button" data-q="${n}" class="${+e.quality === n ? 'on' : ''}">${n}</button>`).join('')}</div>
         <label>有無使用鬧鐘?(被鬧鐘叫醒=是;自然醒或鬧鐘前醒=否)</label>
         <select data-k="alarm"><option></option><option ${e.alarm === '是' ? 'selected' : ''}>是</option><option ${e.alarm === '否' ? 'selected' : ''}>否</option></select>
         <label>備註</label><input data-k="note" value="${e.note ?? ''}" placeholder="例如:感冒">
+        <h3>內容說明(選填)</h3>
+        <div class="row"><div><label>酒 種類/量</label>${inp(e, 'alcohol', 'text', 'placeholder="啤酒 250cc"')}</div><div><label>咖啡因 種類/量</label>${inp(e, 'caffeine', 'text', 'placeholder="咖啡 250cc"')}</div></div>
+        <label>助眠藥物 名稱/劑量</label>${inp(e, 'med', 'text', 'placeholder="Stilnox 50mg"')}
       </div>
-      <div class="card"><h2>睡前填寫(當天)</h2>
+      <div class="card"><details><summary>各欄位明細(由時間軸自動算出,可手動修改)</summary>
+        <div class="row"><div>${L('就寢時間', 'bedTime', inp(e, 'bedTime', 'time'))}</div><div>${L('嘗試入睡', 'tryTime', inp(e, 'tryTime', 'time'))}</div></div>
+        ${L('睡著所需時間(分)', 'latencyMin', inp(e, 'latencyMin', 'number', 'min="0" inputmode="numeric"'))}
+        <div class="row"><div>${L('醒來次數', 'awakenings', inp(e, 'awakenings', 'number', 'min="0" inputmode="numeric"'))}</div><div>${L('總醒來(分)', 'awakeMin', inp(e, 'awakeMin', 'number', 'min="0" inputmode="numeric"'))}</div></div>
+        <div class="row"><div>${L('最後醒來', 'finalWake', inp(e, 'finalWake', 'time'))}</div><div>${L('起床', 'getUp', inp(e, 'getUp', 'time'))}</div></div>
         <div class="row"><div><label>小睡次數</label>${inp(e, 'napCount', 'number', 'min="0" inputmode="numeric"')}</div><div><label>小睡總分鐘</label>${inp(e, 'napMin', 'number', 'min="0" inputmode="numeric"')}</div></div>
-        <div class="row"><div><label>飲酒 種類/量(cc)</label>${inp(e, 'alcohol', 'text', 'placeholder="啤酒 250cc"')}</div><div><label>最後飲酒時間</label>${inp(e, 'alcoholLast', 'time')}</div></div>
-        <div class="row"><div><label>咖啡因 種類/量(cc)</label>${inp(e, 'caffeine', 'text', 'placeholder="咖啡 250cc"')}</div><div><label>最後咖啡因時間</label>${inp(e, 'caffeineLast', 'time')}</div></div>
-        <div class="row"><div><label>助眠藥物 名稱/劑量</label>${inp(e, 'med', 'text')}</div><div><label>服藥時間</label>${inp(e, 'medTime', 'time')}</div></div>
-        <div class="row"><div><label>照光時段</label>${inp(e, 'light', 'text', 'placeholder="07:00-08:00"')}</div><div><label>運動時段</label>${inp(e, 'exercise', 'text', 'placeholder="19:00-20:00"')}</div></div>
-      </div>
+        <div class="row"><div><label>最後飲酒</label>${inp(e, 'alcoholLast', 'time')}</div><div><label>最後咖啡因</label>${inp(e, 'caffeineLast', 'time')}</div></div>
+        <div class="row"><div><label>服藥時間</label>${inp(e, 'medTime', 'time')}</div><div><label>照光時段</label>${inp(e, 'light', 'text')}</div></div>
+        <label>運動時段</label>${inp(e, 'exercise', 'text')}
+      </details></div>
       <button class="btn" id="bSave">儲存</button>`;
+    drawGrid(e);
+    document.querySelectorAll('[data-b]').forEach(b => b.onclick = () => {
+      tl.brush = b.dataset.b; tl.anchor = null;
+      document.querySelectorAll('[data-b]').forEach(x => x.classList.toggle('on', x === b));
+      drawGrid(entries()[state.date] || {});
+    });
+    $('#grid').onclick = ev => { const c = ev.target.closest('.cell'); if (c) tapSlot(+c.dataset.i); };
     let quality = e.quality;
     document.querySelectorAll('[data-q]').forEach(b => b.onclick = () => { quality = +b.dataset.q; document.querySelectorAll('[data-q]').forEach(x => x.classList.toggle('on', x === b)); });
     $('#dDate').onchange = ev => { state.date = ev.target.value; viewDiary(); };
     $('#bSave').onclick = () => {
       const all = entries(), cur = all[state.date] || { date: state.date };
       document.querySelectorAll('[data-k]').forEach(el => { cur[el.dataset.k] = el.value; });
-      cur.quality = quality; cur._auto = []; all[state.date] = cur; save(KEY_E, all);
+      cur.quality = quality; cur._auto = []; delete cur._d; all[state.date] = cur; save(KEY_E, all);
       alert('已儲存'); viewDiary();
     };
   }

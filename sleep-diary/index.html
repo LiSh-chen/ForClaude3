@@ -29,6 +29,21 @@
   table { border-collapse:collapse; width:100%; font-size:12px; } th,td { border:1px solid #333; padding:3px 4px; text-align:center; vertical-align:middle; }
   th.l { background:#e5e5e5; text-align:left; white-space:nowrap; } .scroll { overflow-x:auto; }
   ul.tl { padding-left:18px; margin:6px 0; font-size:14px; }
+  /* 24 小時時間軸 */
+  .brushes { display:flex; gap:6px; overflow-x:auto; padding:4px 0 8px; position:sticky; top:0; background:var(--card); z-index:4; }
+  .brushes button { flex:0 0 auto; border:2px solid var(--line); background:#fff; border-radius:10px; padding:6px 10px; font-size:14px; white-space:nowrap; }
+  .brushes button.on { border-color:var(--pri); background:#e8ecf7; font-weight:700; }
+  .tl-help { font-size:13px; color:var(--sub); margin:2px 0 6px; min-height:20px; }
+  .grid { border:1px solid var(--line); border-radius:8px; overflow:hidden; }
+  .hr { display:flex; align-items:stretch; border-bottom:1px solid var(--line); min-height:38px; }
+  .hr.day0 { border-top:3px solid #888; }
+  .hr .lb { flex:0 0 52px; font-size:12px; color:var(--sub); padding:2px 6px; background:#fafbfe; display:flex; align-items:center; }
+  .cell { flex:1; border-left:1px solid var(--line); display:flex; align-items:center; justify-content:center; gap:2px; font-size:15px; user-select:none; -webkit-tap-highlight-color:transparent; }
+  .cell.dark { background:#f1f3f9; }
+  .cell.sleep { background:#2f4a8a; color:#fff; } .cell.inbed { background:#f6c177; } .cell.nap { background:#9ecbf5; }
+  .cell.anchor { outline:3px solid #e03e3e; outline-offset:-3px; }
+  .tlsum { font-size:13px; color:var(--ink); background:#f4f6fb; border-radius:8px; padding:8px; margin-top:8px; }
+  details > summary { cursor:pointer; font-weight:600; color:var(--pri); }
   /* 夜間模式:純黑,OLED 幾乎不耗電、不刺眼 */
   #night { position:fixed; inset:0; background:#000; color:#333; z-index:20; display:none; flex-direction:column; justify-content:space-between; align-items:center; padding:28px 18px; text-align:center; }
   #night.show { display:flex; }
@@ -49,6 +64,7 @@
 </nav>
 <div id="night"></div>
 <script src="flip.js"></script>
+<script src="timeline.js"></script>
 <script src="app.js"></script>
 </body>
 </html>

@@ -15,7 +15,7 @@ android {
 dependencies { implementation 'androidx.webkit:webkit:1.11.0' }
 // 建置前把網頁版複製進 assets,維持單一原始碼
 tasks.register('syncWeb', Copy) {
-    from('../../sleep-diary') { include 'index.html', 'app.js', 'flip.js' }
+    from('../../sleep-diary') { include 'index.html', 'app.js', 'flip.js', 'timeline.js' }
     into 'src/main/assets/www'
 }
 preBuild.dependsOn 'syncWeb'

@@ -295,17 +295,50 @@
     $('#dDate').onchange = ev => { state.date = ev.target.value; viewDiary(); };
   }
 
+  // ---- 一週條狀圖:每天一條橫條,橫軸 = 前一天 18:00 → 當天 24:00(30 小時),各列時間對齊 ----
+  const MCOL = { caffeine: '#8d5524', alcohol: '#d98e04', med: '#8e44ad', light: '#f4c20d', exercise: '#2e8b57', alarm: '#e03e3e' };
   function viewWeek() {
-    const all = entries(), days = [];
-    const base = new Date(state.date + 'T00:00');
-    for (let i = 6; i >= 0; i--) { const d = new Date(base); d.setDate(d.getDate() - i); days.push(ymd(d)); }
-    const rows = FIELDS.map(([k, label]) => ['morning', 'evening'].includes(k)
-      ? `<tr><th colspan="8">${label}</th></tr>`
-      : `<tr><th class="l">${label}</th>${days.map(d => `<td>${(all[d] || {})[k] ?? ''}</td>`).join('')}</tr>`).join('');
-    $('#app').innerHTML = `<div class="card"><h2>睡眠日記(7 天,至 ${state.date.slice(5)})</h2>
-      <div class="scroll"><table><tr><th class="l">日期</th>${days.map(d => `<th>${d.slice(5).replace('-', '/')}</th>`).join('')}</tr>
-      <tr><th class="l">星期幾</th>${days.map(d => `<th>${wdOf(d).slice(2)}</th>`).join('')}</tr>${rows}</table></div>
+    const all = entries(), end = new Date(state.date + 'T00:00'), days = [];
+    for (let k = 6; k >= 0; k--) { const d = new Date(end); d.setDate(d.getDate() - k); days.push(ymd(d)); }
+    const W = 360, L = 52, BW = W - L - 6, SW = BW / 60, RH = 38, TOP = 22, H = TOP + days.length * RH + 4, p = [];
+    p.push(`<rect x="${L + 8 * SW}" y="${TOP - 4}" width="${18 * SW}" height="${days.length * RH + 4}" fill="#eef0f8"/>`); // 22:00–07:00 夜間底色
+    for (let k = 0; k <= 10; k++) {                                                                                   // 時刻軸
+      const x = L + k * 6 * SW, h = (18 + 3 * k) % 24;
+      p.push(`<line x1="${x}" y1="${TOP - 4}" x2="${x}" y2="${H}" stroke="${h === 0 ? '#999' : '#dde2ee'}" stroke-width="${h === 0 ? 1.5 : 1}"/>`);
+      p.push(`<text x="${x}" y="12" font-size="10" fill="#667" text-anchor="middle">${h}</text>`);
+    }
+    days.forEach((d, r) => {
+      const y = TOP + r * RH, slots = (all[d] || {}).slots || {}, has = Object.keys(slots).length;
+      p.push(`<g data-d="${d}" style="cursor:pointer"><rect x="0" y="${y - 2}" width="${W}" height="${RH - 2}" fill="transparent"/>`);
+      p.push(`<text x="4" y="${y + 13}" font-size="11" fill="${has ? '#1b2437' : '#aaa'}">${d.slice(5).replace('-', '/')}</text><text x="4" y="${y + 26}" font-size="10" fill="#889">週${WD[new Date(d + 'T00:00').getDay()]}${(all[d] || {}).quality ? ' ' + ['😫', '😕', '😐', '🙂', '😄'][all[d].quality - 1] : ''}</text>`);
+      for (let s = 0; s < 60; s++) {
+        const a2 = slots[s]; if (!a2) continue;
+        const st = a2.find(k => COL[k]);
+        if (st) p.push(`<rect x="${(L + s * SW).toFixed(1)}" y="${y + 2}" width="${(SW + 0.3).toFixed(1)}" height="14" fill="${COL[st]}"/>`);
+        const ms = a2.filter(k => MCOL[k]);
+        ms.forEach((k, n) => p.push(`<rect x="${(L + s * SW).toFixed(1)}" y="${y + 19 + n * (9 / ms.length)}" width="${(SW + 0.3).toFixed(1)}" height="${9 / ms.length}" fill="${MCOL[k]}"/>`));
+      }
+      p.push('</g>');
+    });
+    // 統計
+    const st = days.map(d => (all[d] || {}).slots).filter(s => s && Object.keys(s).length).map(s => {
+      const idx = k => Object.keys(s).map(Number).filter(i => i < 36 && s[i].includes(k));
+      const sl = idx('sleep'), inb = Object.keys(s).map(Number).filter(i => i < 36 && (s[i].includes('sleep') || s[i].includes('inbed')));
+      return { sleep: sl.length / 2, bed: inb.length ? Math.min(...inb) : null, up: inb.length ? Math.max(...inb) + 1 : null, inBed: inb.length / 2 };
+    }).filter(x => x.bed !== null);
+    const avg = (arr) => arr.reduce((x, y) => x + y, 0) / arr.length, sT = i => TL.slotStart(Math.round(i));
+    const stats = st.length ? `<div class="tlsum">近 7 天有 ${st.length} 天紀錄 · 平均睡眠 <b>${avg(st.map(x => x.sleep)).toFixed(1)} 小時</b> · 平均上床 <b>${sT(avg(st.map(x => x.bed)))}</b> · 平均起床 <b>${sT(avg(st.map(x => x.up)))}</b> · 睡眠效率 <b>${Math.round(100 * st.reduce((x, y) => x + y.sleep, 0) / st.reduce((x, y) => x + y.inBed, 0))}%</b></div>` : '<div class="tlsum">這一週還沒有時鐘圖紀錄。</div>';
+    const prev = new Date(end); prev.setDate(prev.getDate() - 7); const next = new Date(end); next.setDate(next.getDate() + 7);
+    $('#app').innerHTML = `<div class="card"><h2>一週睡眠(${days[0].slice(5).replace('-', '/')} – ${days[6].slice(5).replace('-', '/')})</h2>
+      <div class="row noprint" style="margin-bottom:6px"><button class="btn alt" id="wPrev" style="margin:0;padding:8px">◀ 前一週</button><button class="btn alt" id="wNext" style="margin:0;padding:8px">後一週 ▶</button></div>
+      <svg viewBox="0 0 ${W} ${H}" style="width:100%;display:block">${p.join('')}</svg>
+      <div class="hint" style="margin-top:6px"><span style="color:${COL.sleep}">■</span> 睡著 <span style="color:${COL.inbed}">■</span> 躺著醒著 <span style="color:${COL.nap}">■</span> 小睡 · 下方細條:
+        <span style="color:${MCOL.caffeine}">■</span>咖啡因 <span style="color:${MCOL.alcohol}">■</span>酒 <span style="color:${MCOL.med}">■</span>藥 <span style="color:${MCOL.light}">■</span>照光 <span style="color:${MCOL.exercise}">■</span>運動 <span style="color:${MCOL.alarm}">■</span>鬧鐘 · 灰底 = 22:00–07:00 · 點任一天可進入編輯</div>
+      ${stats}
       <button class="btn alt noprint" onclick="window.print()">列印 / 存成 PDF(給醫師)</button></div>`;
+    $('#wPrev').onclick = () => { state.date = ymd(prev); viewWeek(); };
+    $('#wNext').onclick = () => { state.date = ymd(next); viewWeek(); };
+    document.querySelectorAll('[data-d]').forEach(g => g.onclick = () => { state.date = g.dataset.d; go('diary'); });
   }
 
   function viewData() {

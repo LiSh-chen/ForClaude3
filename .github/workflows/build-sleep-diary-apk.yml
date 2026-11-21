@@ -1,0 +1,25 @@
+name: Build sleep diary APK
+on:
+  workflow_dispatch:
+  push:
+    branches: [claude/sleep-tracking-sensor-eval-x97b9n]
+    paths: ['android/**', 'sleep-diary/**', '.github/workflows/build-sleep-diary-apk.yml']
+jobs:
+  apk:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-java@v4
+        with: { distribution: temurin, java-version: '17' }
+      - uses: android-actions/setup-android@v3
+      - uses: gradle/actions/setup-gradle@v4
+        with: { gradle-version: '8.9' }
+      - name: Test flip logic
+        run: node sleep-diary/test/flip.test.js
+      - name: Build debug APK
+        working-directory: android
+        run: gradle --no-daemon assembleDebug
+      - uses: actions/upload-artifact@v4
+        with:
+          name: sleep-diary-apk
+          path: android/app/build/outputs/apk/debug/app-debug.apk

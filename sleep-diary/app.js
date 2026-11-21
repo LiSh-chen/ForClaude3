@@ -149,20 +149,66 @@
   const ICON = { caffeine: '☕', alcohol: '🍺', med: '💊', light: '☀', exercise: '🏃', nap: '💤' };
   const DERIVED = ['bedTime', 'tryTime', 'latencyMin', 'awakenings', 'awakeMin', 'finalWake', 'getUp', 'napCount', 'napMin',
     'alcoholLast', 'caffeineLast', 'medTime', 'light', 'exercise'];
-  const tl = { brush: null, anchor: null };
+  const tl = { brush: null, anchor: null, view: 'clock' };
 
-  function drawGrid(e) {
+  // ---- 時鐘圓餅:外圈 = 當天 00:00–24:00,內圈 = 前一晚 18:00–24:00;12 點鐘方向 = 00:00,順時針 ----
+  const COL = { sleep: '#2f4a8a', inbed: '#f6c177', nap: '#9ecbf5' };
+  const rad = d => d * Math.PI / 180;
+  const pt = (r, d) => [200 + r * Math.sin(rad(d)), 200 - r * Math.cos(rad(d))];
+  const f = n => n.toFixed(1);
+  function sector(r0, r1, a0, a1) {
+    const [x0, y0] = pt(r1, a0), [x1, y1] = pt(r1, a1), [x2, y2] = pt(r0, a1), [x3, y3] = pt(r0, a0);
+    return `M${f(x0)} ${f(y0)}A${r1} ${r1} 0 0 1 ${f(x1)} ${f(y1)}L${f(x2)} ${f(y2)}A${r0} ${r0} 0 0 0 ${f(x3)} ${f(y3)}Z`;
+  }
+  function gridClock(e) {
+    const slots = e.slots || {}, parts = [];
+    for (let i = 0; i < 60; i++) {
+      const inner = i < 12, a0 = inner ? 270 + i * 7.5 : (i - 12) * 7.5, a1 = a0 + 7.5;
+      const [r0, r1] = inner ? [84, 124] : [128, 172];
+      const a = slots[i] || [], st = a.find(k => COL[k]) || '';
+      const hourOfDay = ((inner ? 18 * 60 + i * 30 : (i - 12) * 30) / 60) % 24, night = hourOfDay >= 22 || hourOfDay < 7;
+      const fill = st ? COL[st] : night ? '#e6e9f4' : '#fdf6dc';
+      parts.push(`<path data-i="${i}" d="${sector(r0, r1, a0, a1)}" fill="${fill}" stroke="${tl.anchor === i ? '#e03e3e' : '#fff'}" stroke-width="${tl.anchor === i ? 3 : 1}"/>`);
+      const marks = a.filter(k => ICON[k] && k !== 'nap');
+      if (marks.length) {
+        const [x, y] = pt((r0 + r1) / 2, a0 + 3.75);
+        parts.push(`<text x="${f(x)}" y="${f(y)}" font-size="${marks.length > 1 ? 8 : 12}" text-anchor="middle" dominant-baseline="central" pointer-events="none">${marks.map(k => ICON[k]).join('')}</text>`);
+      }
+    }
+    for (let h = 0; h < 24; h += 3) {      // 時刻標示
+      const [x, y] = pt(187, h * 15), [x1, y1] = pt(174, h * 15), [x2, y2] = pt(178, h * 15);
+      parts.push(`<line x1="${f(x1)}" y1="${f(y1)}" x2="${f(x2)}" y2="${f(y2)}" stroke="#888"/>`);
+      parts.push(`<text x="${f(x)}" y="${f(y)}" font-size="12" fill="#555" text-anchor="middle" dominant-baseline="central" pointer-events="none">${h}</text>`);
+    }
+    const [lx, ly] = pt(104, 315);
+    parts.push(`<text x="${f(lx)}" y="${f(ly)}" font-size="9" fill="#667" text-anchor="middle" pointer-events="none" transform="rotate(-45 ${f(lx)} ${f(ly)})">前一晚</text>`);
+    const d = TL.derive(slots), sleepN = Object.keys(slots).filter(k => +k < 36 && slots[k].includes('sleep')).length;
+    const mins = sleepN * 30, c = [];
+    if (sleepN) c.push(`<tspan x="200" dy="0" font-size="20" font-weight="700" fill="#2f4a8a">睡 ${Math.floor(mins / 60)}h${mins % 60 ? String(mins % 60).padStart(2, '0') : ''}</tspan>`);
+    if (d && d.bedTime) c.push(`<tspan x="200" dy="20" font-size="12" fill="#555">${d.bedTime} → ${d.getUp}</tspan>`);
+    if (!c.length) c.push(`<tspan x="200" dy="0" font-size="13" fill="#888">選活動後</tspan><tspan x="200" dy="18" font-size="13" fill="#888">點圓上時段</tspan>`);
+    parts.push(`<text x="200" y="${sleepN ? 192 : 192}" text-anchor="middle" pointer-events="none">${c.join('')}</text>`);
+    $('#grid').innerHTML = `<svg viewBox="0 0 400 400" style="width:100%;max-width:440px;display:block;margin:0 auto;touch-action:manipulation">${parts.join('')}</svg>
+      <p class="hint" style="text-align:center;margin:4px 0 0">外圈 = 當天 0–24 時 · 內圈 = 前一晚 18–24 時 · 每格 30 分</p>`;
+  }
+
+  function gridList(e) {
     const slots = e.slots || {}, rows = [];
     for (let h = 0; h < 30; h++) {
       const hour = (18 + h) % 24, cells = [0, 1].map(half => {
         const i = h * 2 + half, a = slots[i] || [];
         const st = a.find(k => ['sleep', 'inbed', 'nap'].includes(k)) || '';
         const dark = (hour >= 22 || hour < 7) && !st ? ' dark' : '';
-        return `<div class="cell ${st}${dark}${tl.anchor === i ? ' anchor' : ''}" data-i="${i}">${a.filter(k => ICON[k] && k !== 'nap').map(k => ICON[k]).join('')}${st === 'nap' ? '' : ''}</div>`;
+        return `<div class="cell ${st}${dark}${tl.anchor === i ? ' anchor' : ''}" data-i="${i}">${a.filter(k => ICON[k] && k !== 'nap').map(k => ICON[k]).join('')}</div>`;
       }).join('');
       rows.push(`<div class="hr${hour === 0 ? ' day0' : ''}"><div class="lb">${String(hour).padStart(2, '0')}:00${hour === 0 ? '<br>當天' : ''}</div>${cells}</div>`);
     }
     $('#grid').innerHTML = rows.join('');
+  }
+
+  function drawGrid(e) {
+    (tl.view === 'list' ? gridList : gridClock)(e);
+    document.querySelectorAll('[data-v]').forEach(b => b.classList.toggle('on', b.dataset.v === (tl.view || 'clock')));
     const sum = [];
     const d = e.slots && Object.keys(e.slots).length ? TL.derive(e.slots) : null;
     if (d) {
@@ -203,6 +249,7 @@
         <div class="row"><input type="date" id="dDate" value="${state.date}"><input disabled value="${wdOf(state.date)}"></div></div>
       <div class="card"><h2>24 小時時間軸</h2>
         <div class="brushes">${BRUSHES.map(([k, t]) => `<button type="button" data-b="${k}">${t}</button>`).join('')}</div>
+        <div class="row noprint" style="margin-bottom:6px"><button type="button" class="btn alt" style="margin:0;padding:8px;font-size:14px" data-v="clock">🕐 時鐘圖</button><button type="button" class="btn alt" style="margin:0;padding:8px;font-size:14px" data-v="list">☰ 清單</button></div>
         <div class="tl-help" id="tlhelp"></div>
         <div class="grid" id="grid"></div>
         <div class="tlsum" id="tlsum"></div>
@@ -237,7 +284,8 @@
       document.querySelectorAll('[data-b]').forEach(x => x.classList.toggle('on', x === b));
       drawGrid(entries()[state.date] || {});
     });
-    $('#grid').onclick = ev => { const c = ev.target.closest('.cell'); if (c) tapSlot(+c.dataset.i); };
+    document.querySelectorAll('[data-v]').forEach(b => b.onclick = () => { tl.view = b.dataset.v; tl.anchor = null; drawGrid(entries()[state.date] || {}); });
+    $('#grid').onclick = ev => { const c = ev.target.closest('[data-i]'); if (c) tapSlot(+c.dataset.i); };
     let quality = e.quality;
     document.querySelectorAll('[data-q]').forEach(b => b.onclick = () => { quality = +b.dataset.q; document.querySelectorAll('[data-q]').forEach(x => x.classList.toggle('on', x === b)); });
     $('#dDate').onchange = ev => { state.date = ev.target.value; viewDiary(); };

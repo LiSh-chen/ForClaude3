@@ -1,0 +1,54 @@
+<!doctype html>
+<html lang="zh-Hant">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
+<meta name="theme-color" content="#14213d">
+<title>睡眠日記</title>
+<style>
+  :root { --bg:#f4f6fb; --card:#fff; --ink:#1b2437; --sub:#6b7488; --pri:#2f4a8a; --line:#dde2ee; --ok:#2e7d4f; --warn:#b26a00; }
+  * { box-sizing:border-box; }
+  body { margin:0; font:16px/1.5 system-ui,-apple-system,"Noto Sans TC",sans-serif; background:var(--bg); color:var(--ink); padding-bottom:72px; }
+  header { background:#14213d; color:#fff; padding:14px 16px; font-weight:600; }
+  main { max-width:720px; margin:0 auto; padding:12px; }
+  nav { position:fixed; bottom:0; left:0; right:0; display:flex; background:#fff; border-top:1px solid var(--line); z-index:5; }
+  nav button { flex:1; border:0; background:none; padding:12px 0; font-size:14px; color:var(--sub); }
+  nav button.on { color:var(--pri); font-weight:700; box-shadow:inset 0 3px var(--pri); }
+  .card { background:var(--card); border-radius:12px; padding:14px; margin:0 0 12px; box-shadow:0 1px 3px #0001; }
+  h2 { font-size:17px; margin:0 0 8px; } h3 { font-size:15px; margin:14px 0 6px; color:var(--pri); }
+  label { display:block; margin:10px 0 2px; font-size:14px; color:var(--sub); }
+  input,select,textarea { width:100%; font:inherit; padding:9px; border:1px solid var(--line); border-radius:8px; background:#fff; color:var(--ink); }
+  .row { display:flex; gap:8px; } .row > * { flex:1; }
+  .btn { display:block; width:100%; border:0; border-radius:10px; padding:14px; font-size:17px; font-weight:600; background:var(--pri); color:#fff; margin-top:10px; }
+  .btn.alt { background:#e8ecf7; color:var(--pri); } .btn.danger { background:#7a2b2b; }
+  .hint { font-size:13px; color:var(--sub); } .auto { color:var(--warn); font-size:12px; margin-left:6px; }
+  .pill { display:inline-block; padding:2px 10px; border-radius:99px; font-size:13px; background:#e8ecf7; }
+  .pill.ok { background:#dff3e6; color:var(--ok); } .pill.warn { background:#fdebd0; color:var(--warn); }
+  .stars { display:flex; gap:6px; } .stars button { flex:1; padding:10px 0; border:1px solid var(--line); border-radius:8px; background:#fff; font-size:16px; }
+  .stars button.on { background:var(--pri); color:#fff; border-color:var(--pri); }
+  table { border-collapse:collapse; width:100%; font-size:12px; } th,td { border:1px solid #333; padding:3px 4px; text-align:center; vertical-align:middle; }
+  th.l { background:#e5e5e5; text-align:left; white-space:nowrap; } .scroll { overflow-x:auto; }
+  ul.tl { padding-left:18px; margin:6px 0; font-size:14px; }
+  /* 夜間模式:純黑,OLED 幾乎不耗電、不刺眼 */
+  #night { position:fixed; inset:0; background:#000; color:#333; z-index:20; display:none; flex-direction:column; justify-content:space-between; align-items:center; padding:28px 18px; text-align:center; }
+  #night.show { display:flex; }
+  #night .st { font-size:15px; margin-top:40px; } #night .st b { color:#444; font-size:20px; display:block; margin-bottom:6px; }
+  #night .ctl { width:100%; display:flex; flex-direction:column; gap:10px; }
+  #night button { background:#0d0d0d; color:#3a3a3a; border:1px solid #1a1a1a; border-radius:10px; padding:16px; font-size:16px; }
+  @media print { header,nav,.noprint { display:none !important; } body { background:#fff; padding:0; } .card { box-shadow:none; padding:0; } }
+</style>
+</head>
+<body>
+<header>🌙 睡眠日記 <span class="hint" style="color:#aab">(依台大睡眠中心睡眠日記表單)</span></header>
+<main id="app"></main>
+<nav>
+  <button data-tab="night">今晚</button>
+  <button data-tab="diary">日記</button>
+  <button data-tab="week">週表</button>
+  <button data-tab="data">資料</button>
+</nav>
+<div id="night"></div>
+<script src="flip.js"></script>
+<script src="app.js"></script>
+</body>
+</html>

@@ -19,11 +19,8 @@ public class MainActivity extends Activity {
         super.onCreate(b);
         getWindow().addFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON);
         final WebViewAssetLoader loader = new WebViewAssetLoader.Builder()
-            .addPathHandler("/", new WebViewAssetLoader.AssetsPathHandler(this) {
-                @Override public WebResourceResponse handle(String path) {
-                    return super.handle("www/" + (path.isEmpty() ? "index.html" : path));
-                }
-            }).build();
+            .addPathHandler("/assets/", new WebViewAssetLoader.AssetsPathHandler(this))
+            .build();
         web = new WebView(this);
         WebSettings s = web.getSettings();
         s.setJavaScriptEnabled(true);
@@ -34,7 +31,7 @@ public class MainActivity extends Activity {
             }
         });
         setContentView(web);
-        web.loadUrl("https://appassets.androidplatform.net/index.html");
+        web.loadUrl("https://appassets.androidplatform.net/assets/www/index.html");
     }
 
     @Override public void onBackPressed() { moveTaskToBack(true); }

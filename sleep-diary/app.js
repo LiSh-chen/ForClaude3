@@ -142,13 +142,9 @@
     if ($('#bResume')) $('#bResume').onclick = () => { $('#night').classList.add('show'); lockScreen(); renderNight(); };
   }
 
-  const inp = (e, k, type, extra) => `<input type="${type}" data-k="${k}" value="${e[k] ?? ''}" ${extra || ''}>`;
-  const auto = (e, k) => (e._auto || []).includes(k) ? '<span class="auto">自動帶入</span>' : '';
   const BRUSHES = [['sleep', '😴 睡著'], ['inbed', '🛏 躺著醒著'], ['nap', '💤 小睡'], ['caffeine', '☕ 咖啡因'], ['alcohol', '🍺 酒'],
-    ['med', '💊 助眠藥'], ['light', '☀ 照光'], ['exercise', '🏃 運動'], ['erase', '⌫ 清除']];
-  const ICON = { caffeine: '☕', alcohol: '🍺', med: '💊', light: '☀', exercise: '🏃', nap: '💤' };
-  const DERIVED = ['bedTime', 'tryTime', 'latencyMin', 'awakenings', 'awakeMin', 'finalWake', 'getUp', 'napCount', 'napMin',
-    'alcoholLast', 'caffeineLast', 'medTime', 'light', 'exercise'];
+    ['med', '💊 助眠藥'], ['light', '☀ 照光'], ['exercise', '🏃 運動'], ['alarm', '⏰ 鬧鐘'], ['erase', '⌫ 清除']];
+  const ICON = { caffeine: '☕', alcohol: '🍺', med: '💊', light: '☀', exercise: '🏃', alarm: '⏰', nap: '💤' };
   const tl = { brush: null, anchor: null, view: 'clock' };
 
   // ---- 時鐘圓餅:外圈 = 當天 00:00–24:00,內圈 = 前一晚 18:00–24:00;12 點鐘方向 = 00:00,順時針 ----
@@ -182,11 +178,14 @@
     }
     const [lx, ly] = pt(104, 315);
     parts.push(`<text x="${f(lx)}" y="${f(ly)}" font-size="9" fill="#667" text-anchor="middle" pointer-events="none" transform="rotate(-45 ${f(lx)} ${f(ly)})">前一晚</text>`);
+    parts.push('<circle data-c="1" cx="200" cy="200" r="80" fill="#fff" stroke="#e3e7f1"/>');
     const d = TL.derive(slots), sleepN = Object.keys(slots).filter(k => +k < 36 && slots[k].includes('sleep')).length;
     const mins = sleepN * 30, c = [];
     if (sleepN) c.push(`<tspan x="200" dy="0" font-size="20" font-weight="700" fill="#2f4a8a">睡 ${Math.floor(mins / 60)}h${mins % 60 ? String(mins % 60).padStart(2, '0') : ''}</tspan>`);
     if (d && d.bedTime) c.push(`<tspan x="200" dy="20" font-size="12" fill="#555">${d.bedTime} → ${d.getUp}</tspan>`);
-    if (!c.length) c.push(`<tspan x="200" dy="0" font-size="13" fill="#888">選活動後</tspan><tspan x="200" dy="18" font-size="13" fill="#888">點圓上時段</tspan>`);
+    const FACE = ['😫', '😕', '😐', '🙂', '😄'];
+    if (c.length) c.push(`<tspan x="200" dy="24" font-size="18">${e.quality ? FACE[e.quality - 1] : '<tspan font-size="11" fill="#888">點此評分/備註</tspan>'}</tspan>`);
+    if (!c.length) c.push(`<tspan x="200" dy="0" font-size="13" fill="#888">選活動後</tspan><tspan x="200" dy="18" font-size="13" fill="#888">點圓上時段</tspan><tspan x="200" dy="24" font-size="11" fill="#888">點圓心:評分/備註</tspan>`);
     parts.push(`<text x="200" y="${sleepN ? 192 : 192}" text-anchor="middle" pointer-events="none">${c.join('')}</text>`);
     $('#grid').innerHTML = `<svg viewBox="0 0 400 400" style="width:100%;max-width:440px;display:block;margin:0 auto;touch-action:manipulation">${parts.join('')}</svg>
       <p class="hint" style="text-align:center;margin:4px 0 0">外圈 = 當天 0–24 時 · 內圈 = 前一晚 18–24 時 · 每格 30 分</p>`;
@@ -223,61 +222,66 @@
   }
 
   function tapSlot(i) {
-    if (!tl.brush) return;
-    if (tl.anchor == null) { tl.anchor = i; } else {
-      const all = entries(), cur = all[state.date] || { date: state.date };
-      cur.slots = TL.paint(cur.slots || {}, tl.brush, tl.anchor, i);
-      tl.anchor = null;
-      const d = TL.derive(cur.slots);
-      if (d) { Object.assign(cur, d); cur._auto = []; }
-      all[state.date] = cur; save(KEY_E, all);
-      DERIVED.forEach(k => { const el = document.querySelector(`[data-k="${k}"]`); if (el && d) el.value = d[k] ?? ''; });
-      cur._d = d;
-      drawGrid(cur); return;
-    }
-    drawGrid(entries()[state.date] || {});
+    if (!tl.brush) { $('#tlhelp').textContent = '請先選上方一種活動'; return; }
+    if (tl.anchor == null) { tl.anchor = i; drawGrid(entries()[state.date] || {}); return; }
+    const all = entries(), cur = all[state.date] || { date: state.date };
+    cur.slots = TL.paint(cur.slots || {}, tl.brush, tl.anchor, i);
+    tl.anchor = null;
+    const d = TL.derive(cur.slots);
+    if (d) { Object.assign(cur, d); cur._auto = []; }
+    all[state.date] = cur; save(KEY_E, all);
+    drawGrid(cur);
+    if (['alcohol', 'caffeine', 'med'].includes(tl.brush) && cur.slots && Object.values(cur.slots).some(a => a.includes(tl.brush))) openSheet(tl.brush);
+  }
+
+  const patch = (k, v) => { const all = entries(), cur = all[state.date] || { date: state.date }; cur[k] = v; all[state.date] = cur; save(KEY_E, all); };
+  const defType = date => [0, 6].includes(new Date(date + 'T00:00').getDay()) ? '休息日' : '工作日';
+  const FACES = ['😫 非常差', '😕 差', '😐 普通', '🙂 好', '😄 非常好'];
+  const PRESETS = { alcohol: ['啤酒 350cc', '紅酒 150cc', '烈酒 45cc'], caffeine: ['咖啡 250cc', '茶 250cc', '可樂 330cc'], med: [] };
+
+  /** 底部面板:睡眠品質、備註、酒/咖啡因/藥物內容(即時自動儲存)。focus = 要聚焦的欄位。 */
+  function openSheet(focus) {
+    const e = entries()[state.date] || {};
+    const f = (k, label, ph) => `<label>${label}</label><input data-s="${k}" value="${(e[k] ?? '').toString().replace(/"/g, '&quot;')}" placeholder="${ph}">
+      <div class="chips">${(PRESETS[k] || []).map(p => `<button type="button" data-p="${k}" data-v="${p}">${p}</button>`).join('')}</div>`;
+    const sh = $('#sheet');
+    sh.innerHTML = `<div class="back" id="shBack"></div><div class="panel">
+      <h2>這一天的感受與內容</h2>
+      <label>自覺睡眠品質</label>
+      <div class="stars">${FACES.map((t, n) => `<button type="button" data-q="${n + 1}" class="${+e.quality === n + 1 ? 'on' : ''}">${t.split(' ')[0]}</button>`).join('')}</div>
+      <div class="hint" id="qtxt">${e.quality ? FACES[e.quality - 1] : '點一個表情'}</div>
+      ${f('note', '備註', '例如:感冒')}${f('alcohol', '🍺 酒 種類/量', '啤酒 250cc')}${f('caffeine', '☕ 咖啡因 種類/量', '咖啡 250cc')}${f('med', '💊 助眠藥物 名稱/劑量', 'Stilnox 50mg')}
+      <button class="btn" id="shDone">完成</button></div>`;
+    sh.classList.add('show');
+    sh.querySelectorAll('[data-q]').forEach(b => b.onclick = () => {
+      patch('quality', +b.dataset.q);
+      sh.querySelectorAll('[data-q]').forEach(x => x.classList.toggle('on', x === b)); $('#qtxt').textContent = FACES[+b.dataset.q - 1];
+    });
+    sh.querySelectorAll('[data-s]').forEach(el => el.oninput = () => patch(el.dataset.s, el.value));
+    sh.querySelectorAll('[data-p]').forEach(b => b.onclick = () => { const el = sh.querySelector(`[data-s=${b.dataset.p}]`); el.value = b.dataset.v; patch(b.dataset.p, b.dataset.v); });
+    const close = () => { sh.classList.remove('show'); sh.innerHTML = ''; drawGrid(entries()[state.date] || {}); };
+    $('#shBack').onclick = $('#shDone').onclick = close;
+    if (focus) { const el = sh.querySelector(`[data-s=${focus}]`); if (el) setTimeout(() => el.focus(), 50); }
   }
 
   function viewDiary() {
     const e = entries()[state.date] || { date: state.date };
-    e._d = e.slots && Object.keys(e.slots).length ? TL.derive(e.slots) : null;
     tl.anchor = null;
-    const L = (t, k, body) => `<label>${t}${auto(e, k)}</label>${body}`;
-    const iv = (e._intervals || []).map(i => `<li>${i[0]} → ${i[1]}</li>`).join('');
     $('#app').innerHTML = `
-      <div class="card"><label>日期(表單欄位日期 = 起床當天)</label>
-        <div class="row"><input type="date" id="dDate" value="${state.date}"><input disabled value="${wdOf(state.date)}"></div></div>
-      <div class="card"><h2>24 小時時間軸</h2>
+      <div class="card"><div class="row" style="align-items:end">
+        <div style="flex:2"><label style="margin-top:0">日期(= 起床當天)</label><input type="date" id="dDate" value="${state.date}"></div>
+        <div><label style="margin-top:0">${wdOf(state.date)}</label><button type="button" class="btn alt" id="bType" style="margin:0;padding:9px;font-size:15px">${e.dayType || defType(state.date)}</button></div>
+      </div></div>
+      <div class="card"><h2>24 小時時鐘</h2>
         <div class="brushes">${BRUSHES.map(([k, t]) => `<button type="button" data-b="${k}">${t}</button>`).join('')}</div>
         <div class="row noprint" style="margin-bottom:6px"><button type="button" class="btn alt" style="margin:0;padding:8px;font-size:14px" data-v="clock">🕐 時鐘圖</button><button type="button" class="btn alt" style="margin:0;padding:8px;font-size:14px" data-v="list">☰ 清單</button></div>
         <div class="tl-help" id="tlhelp"></div>
         <div class="grid" id="grid"></div>
         <div class="tlsum" id="tlsum"></div>
-        <p class="hint">每格 30 分鐘,從前一天 18:00 到當天 24:00。範圍內已全是同一活動時,再塗一次就是取消。</p>
-        ${iv ? `<p class="hint">感測器記到的夜間醒來(精確時間):</p><ul class="tl">${iv}</ul>` : ''}
-      </div>
-      <div class="card"><h2>主觀感受</h2>
-        ${L('工作日或休息日', 'dayType', `<select data-k="dayType"><option></option><option ${e.dayType === '工作日' ? 'selected' : ''}>工作日</option><option ${e.dayType === '休息日' ? 'selected' : ''}>休息日</option></select>`)}
-        <label>自覺睡眠品質(1 非常差 2 差 3 普通 4 好 5 非常好)</label>
-        <div class="stars">${[1, 2, 3, 4, 5].map(n => `<button type="button" data-q="${n}" class="${+e.quality === n ? 'on' : ''}">${n}</button>`).join('')}</div>
-        <label>有無使用鬧鐘?(被鬧鐘叫醒=是;自然醒或鬧鐘前醒=否)</label>
-        <select data-k="alarm"><option></option><option ${e.alarm === '是' ? 'selected' : ''}>是</option><option ${e.alarm === '否' ? 'selected' : ''}>否</option></select>
-        <label>備註</label><input data-k="note" value="${e.note ?? ''}" placeholder="例如:感冒">
-        <h3>內容說明(選填)</h3>
-        <div class="row"><div><label>酒 種類/量</label>${inp(e, 'alcohol', 'text', 'placeholder="啤酒 250cc"')}</div><div><label>咖啡因 種類/量</label>${inp(e, 'caffeine', 'text', 'placeholder="咖啡 250cc"')}</div></div>
-        <label>助眠藥物 名稱/劑量</label>${inp(e, 'med', 'text', 'placeholder="Stilnox 50mg"')}
-      </div>
-      <div class="card"><details><summary>各欄位明細(由時間軸自動算出,可手動修改)</summary>
-        <div class="row"><div>${L('就寢時間', 'bedTime', inp(e, 'bedTime', 'time'))}</div><div>${L('嘗試入睡', 'tryTime', inp(e, 'tryTime', 'time'))}</div></div>
-        ${L('睡著所需時間(分)', 'latencyMin', inp(e, 'latencyMin', 'number', 'min="0" inputmode="numeric"'))}
-        <div class="row"><div>${L('醒來次數', 'awakenings', inp(e, 'awakenings', 'number', 'min="0" inputmode="numeric"'))}</div><div>${L('總醒來(分)', 'awakeMin', inp(e, 'awakeMin', 'number', 'min="0" inputmode="numeric"'))}</div></div>
-        <div class="row"><div>${L('最後醒來', 'finalWake', inp(e, 'finalWake', 'time'))}</div><div>${L('起床', 'getUp', inp(e, 'getUp', 'time'))}</div></div>
-        <div class="row"><div><label>小睡次數</label>${inp(e, 'napCount', 'number', 'min="0" inputmode="numeric"')}</div><div><label>小睡總分鐘</label>${inp(e, 'napMin', 'number', 'min="0" inputmode="numeric"')}</div></div>
-        <div class="row"><div><label>最後飲酒</label>${inp(e, 'alcoholLast', 'time')}</div><div><label>最後咖啡因</label>${inp(e, 'caffeineLast', 'time')}</div></div>
-        <div class="row"><div><label>服藥時間</label>${inp(e, 'medTime', 'time')}</div><div><label>照光時段</label>${inp(e, 'light', 'text')}</div></div>
-        <label>運動時段</label>${inp(e, 'exercise', 'text')}
-      </details></div>
-      <button class="btn" id="bSave">儲存</button>`;
+        <button type="button" class="btn alt" id="bSheet">⭐ 睡眠品質・備註・飲料內容</button>
+        <p class="hint">所有變更自動儲存。每格 30 分鐘;範圍內已全是同一活動時,再塗一次就是取消。⏰ 塗在被鬧鐘叫醒的時段;沒塗就代表沒用鬧鐘。</p>
+      </div>`;
+    if (!e.dayType) patch('dayType', defType(state.date));
     drawGrid(e);
     document.querySelectorAll('[data-b]').forEach(b => b.onclick = () => {
       tl.brush = b.dataset.b; tl.anchor = null;
@@ -285,16 +289,10 @@
       drawGrid(entries()[state.date] || {});
     });
     document.querySelectorAll('[data-v]').forEach(b => b.onclick = () => { tl.view = b.dataset.v; tl.anchor = null; drawGrid(entries()[state.date] || {}); });
-    $('#grid').onclick = ev => { const c = ev.target.closest('[data-i]'); if (c) tapSlot(+c.dataset.i); };
-    let quality = e.quality;
-    document.querySelectorAll('[data-q]').forEach(b => b.onclick = () => { quality = +b.dataset.q; document.querySelectorAll('[data-q]').forEach(x => x.classList.toggle('on', x === b)); });
+    $('#grid').onclick = ev => { if (ev.target.closest('[data-c]')) return openSheet(); const c = ev.target.closest('[data-i]'); if (c) tapSlot(+c.dataset.i); };
+    $('#bSheet').onclick = () => openSheet();
+    $('#bType').onclick = () => { const cur = (entries()[state.date] || {}).dayType || defType(state.date); const nx = cur === '工作日' ? '休息日' : '工作日'; patch('dayType', nx); $('#bType').textContent = nx; };
     $('#dDate').onchange = ev => { state.date = ev.target.value; viewDiary(); };
-    $('#bSave').onclick = () => {
-      const all = entries(), cur = all[state.date] || { date: state.date };
-      document.querySelectorAll('[data-k]').forEach(el => { cur[el.dataset.k] = el.value; });
-      cur.quality = quality; cur._auto = []; delete cur._d; all[state.date] = cur; save(KEY_E, all);
-      alert('已儲存'); viewDiary();
-    };
   }
 
   function viewWeek() {

@@ -43,6 +43,10 @@
   .cell.sleep { background:#2f4a8a; color:#fff; } .cell.inbed { background:#f6c177; } .cell.nap { background:#9ecbf5; }
   .cell.anchor { outline:3px solid #e03e3e; outline-offset:-3px; }
   [data-v].on { background:var(--pri) !important; color:#fff !important; }
+  #sheet { position:fixed; inset:0; z-index:15; display:none; } #sheet.show { display:block; }
+  #sheet .back { position:absolute; inset:0; background:#0006; }
+  #sheet .panel { position:absolute; left:0; right:0; bottom:0; max-height:85vh; overflow-y:auto; background:#fff; border-radius:16px 16px 0 0; padding:16px 16px 24px; max-width:720px; margin:0 auto; }
+  .chips { display:flex; gap:6px; flex-wrap:wrap; margin-top:6px; } .chips button { border:1px solid var(--line); background:#f4f6fb; border-radius:99px; padding:4px 12px; font-size:13px; }
   .tlsum { font-size:13px; color:var(--ink); background:#f4f6fb; border-radius:8px; padding:8px; margin-top:8px; }
   details > summary { cursor:pointer; font-weight:600; color:var(--pri); }
   /* 夜間模式:純黑,OLED 幾乎不耗電、不刺眼 */
@@ -64,6 +68,7 @@
   <button data-tab="data">資料</button>
 </nav>
 <div id="night"></div>
+<div id="sheet"></div>
 <script src="flip.js"></script>
 <script src="timeline.js"></script>
 <script src="app.js"></script>

@@ -14,6 +14,9 @@ T.paint(s, 'nap', at(14, 0), at(14, 30));  // 下午小睡(當天 14:00–15:00)
 T.paint(s, 'caffeine', 4, 4);                         // 咖啡因
 T.paint(s, 'light', at(7, 0) , at(7, 30));            // 照光
 let d = T.derive(s);
+assert.strictEqual(d.alarm, '否');
+T.paint(s, 'alarm', at(7, 0), at(7, 0)); assert.strictEqual(T.derive(s).alarm, '是');
+T.paint(s, 'alarm', at(7, 0), at(7, 0));
 assert.strictEqual(d.bedTime, '23:00');
 assert.strictEqual(d.latencyMin, 30);                 // 23:00 躺 → 23:30 睡
 assert.strictEqual(d.awakenings, 1);

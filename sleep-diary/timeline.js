@@ -4,7 +4,7 @@
   // 時間軸視窗:起床日 D 的前一天 18:00 → D 當天 24:00,共 30 小時、每格 30 分鐘 = 60 格
   var N = 60, START_MIN = 18 * 60, STEP = 30, NIGHT_END = 36; // index 36 = D 12:00,之前視為「前一晚」
   var STATES = ['inbed', 'sleep', 'nap'];                     // 互斥:躺床醒著 / 睡著 / 小睡
-  var MARKS = ['caffeine', 'alcohol', 'med', 'light', 'exercise'];
+  var MARKS = ['caffeine', 'alcohol', 'med', 'light', 'exercise', 'alarm'];
 
   var pad = function (n) { return (n < 10 ? '0' : '') + n; };
   function hhmm(min) { min = ((min % 1440) + 1440) % 1440; return pad(Math.floor(min / 60)) + ':' + pad(min % 60); }
@@ -45,7 +45,7 @@
   function derive(slots) {
     if (!Object.keys(slots).length) return null;
     var out = { bedTime: '', tryTime: '', latencyMin: '', awakenings: '', awakeMin: '', finalWake: '', getUp: '',
-      napCount: '', napMin: '', alcoholLast: '', caffeineLast: '', medTime: '', light: '', exercise: '' };
+      alarm: '否', napCount: '', napMin: '', alcoholLast: '', caffeineLast: '', medTime: '', light: '', exercise: '' };
     var inBed = idx(slots, function (i, a) { return i < NIGHT_END && (a.indexOf('inbed') >= 0 || a.indexOf('sleep') >= 0); });
     var sleep = idx(slots, function (i) { return i < NIGHT_END && has(slots, i, 'sleep'); });
     if (inBed.length) {
@@ -62,6 +62,7 @@
         out.finalWake = slotEnd(ls);
       }
     }
+    if (idx(slots, function (i) { return has(slots, i, 'alarm'); }).length) out.alarm = '是';
     var naps = idx(slots, function (i) { return has(slots, i, 'nap'); });
     if (naps.length) { out.napCount = runs(naps).length; out.napMin = naps.length * STEP; }
     var al = idx(slots, function (i) { return has(slots, i, 'alcohol'); });

@@ -121,9 +121,68 @@
     window.scrollTo(0, 0);
   }
 
+  // ---------- 即時記錄:按「開始」「結束」自動把這段時間塗到時鐘上 ----------
+  const KEY_T = 'sleepdiary.timers';
+  const TIMERS = [['light', '☀ 照光'], ['exercise', '🏃 運動'], ['ritual', '🧘 睡前儀式'], ['nap', '💤 小睡']];
+  const EVENTS = [['caffeine', '☕ 咖啡因'], ['alcohol', '🍺 酒'], ['med', '💊 助眠藥']];
+  const labelOf = k => (TIMERS.concat(EVENTS).find(x => x[0] === k) || [k, k])[1];
+  const timers = () => load(KEY_T, {});
+  /** 某時刻對應的(日記日期, 格子編號):18:00–24:00 歸「隔天」的前一晚內圈,其餘歸當天外圈。 */
+  function slotRef(ms) {
+    const d = new Date(ms), min = d.getHours() * 60 + d.getMinutes();
+    if (min >= 18 * 60) { const n = new Date(d.getFullYear(), d.getMonth(), d.getDate() + 1); return { date: ymd(n), idx: Math.floor((min - 18 * 60) / 30) }; }
+    return { date: ymd(d), idx: 12 + Math.floor(min / 30) };
+  }
+  /** 把 [from,to] 涵蓋的每個 30 分鐘格加上 kind;回傳受影響的日期。 */
+  function applyInterval(kind, from, to) {
+    const all = entries(), touched = new Set(), t0 = new Date(from);
+    t0.setMinutes(Math.floor(t0.getMinutes() / 30) * 30, 0, 0);
+    for (let t = t0.getTime(); t <= Math.max(from, to - 1); t += 30 * 60000) {
+      const r = slotRef(t), cur = all[r.date] || (all[r.date] = { date: r.date });
+      cur.slots = TL.add(cur.slots || {}, kind, r.idx); touched.add(r.date);
+    }
+    touched.forEach(dt => { const c = all[dt], dv = TL.derive(c.slots); if (dv) { Object.assign(c, dv); c._auto = []; } if (!c.dayType) c.dayType = defType(dt); });
+    save(KEY_E, all); return [...touched];
+  }
+  function toast(msg) {
+    let el = $('#toast'); if (!el) { el = document.createElement('div'); el.id = 'toast'; document.body.appendChild(el); }
+    el.textContent = msg; el.classList.add('show'); clearTimeout(toast.t); toast.t = setTimeout(() => el.classList.remove('show'), 3500);
+  }
+  function startTimer(kind) { const T = timers(); T[kind] = Date.now(); save(KEY_T, T); renderTimerBar(); if (state.tab === 'night') viewNight(); }
+  function endTimer(kind) {
+    const T = timers(), from = T[kind]; if (!from) return;
+    const to = Date.now(); delete T[kind]; save(KEY_T, T);
+    const dates = applyInterval(kind, from, to);
+    toast(`已記錄 ${labelOf(kind)} ${hm(from)}–${hm(to)}`);
+    renderTimerBar(); if (state.tab === 'night') viewNight(); else if (state.tab === 'week') viewWeek(); else if (state.tab === 'diary') viewDiary();
+    if (kind === 'ritual') openSheet('ritualNote', dates[0]);
+  }
+  function recordEvent2(kind) {   // 咖啡因/酒/藥:記錄「現在」這一格,再問內容
+    const now = Date.now(), dates = applyInterval(kind, now, now);
+    toast(`已記錄 ${labelOf(kind)} ${hm(now)}`); openSheet(kind, dates[0]);
+  }
+  const dur = ms => { const m = Math.max(0, Math.round(ms / 60000)); return m >= 60 ? `${Math.floor(m / 60)} 小時 ${m % 60} 分` : `${m} 分`; };
+  function renderTimerBar() {
+    let el = $('#timerbar'); if (!el) { el = document.createElement('div'); el.id = 'timerbar'; document.body.appendChild(el); }
+    const T = timers(), ks = Object.keys(T);
+    el.style.display = ks.length ? 'block' : 'none';
+    el.innerHTML = ks.map(k => `<div class="tb"><span>${labelOf(k)} 進行中 · 自 ${hm(T[k])}(${dur(Date.now() - T[k])})</span><button data-end="${k}">結束</button></div>`).join('');
+    el.querySelectorAll('[data-end]').forEach(b => b.onclick = () => endTimer(b.dataset.end));
+  }
+  setInterval(renderTimerBar, 20000);
+
   function viewNight() {
     const s = session();
+    const T = timers();
     $('#app').innerHTML = `
+      <div class="card"><h2>⏱ 即時記錄</h2>
+        <p class="hint">開始做的時候按「開始」,結束時按「結束」,App 自動把這段時間塗到時鐘上。</p>
+        <div class="row" style="flex-wrap:wrap">${TIMERS.map(([k, t]) => T[k]
+          ? `<button class="btn danger" style="flex:1 1 45%;margin-top:6px;padding:12px" data-t="${k}">⏹ 結束${t.slice(2)}<br><small>自 ${hm(T[k])}</small></button>`
+          : `<button class="btn alt" style="flex:1 1 45%;margin-top:6px;padding:12px" data-t="${k}">▶ 開始 ${t}</button>`).join('')}</div>
+        <p class="hint" style="margin-top:12px">單次事件(記下「現在」並詢問內容):</p>
+        <div class="row">${EVENTS.map(([k, t]) => `<button class="btn alt" style="margin-top:0;padding:10px;font-size:14px" data-ev="${k}">${t}</button>`).join('')}</div>
+      </div>
       <div class="card"><h2>今晚怎麼記?</h2>
         <p class="hint">不用看時間:按下按鈕或翻面,App 自動記下時間。夜間畫面全黑、不顯示時間(避免看時鐘更睡不著)。</p>
         <h3>1. 啟用翻面感測</h3>
@@ -136,6 +195,8 @@
         ${s && s.tryAt ? '<button class="btn alt" id="bResume">回到夜間畫面</button>' : ''}
       </div>
       <div class="card"><h2>注意</h2><p class="hint">瀏覽器版需整夜保持螢幕開著(純黑)並接上充電器;手機鎖屏後網頁的感測器會停止。想整夜免開螢幕,需做成原生 App,詳見 EVALUATION.md。</p></div>`;
+    document.querySelectorAll('[data-t]').forEach(b => b.onclick = () => (timers()[b.dataset.t] ? endTimer : startTimer)(b.dataset.t));
+    document.querySelectorAll('[data-ev]').forEach(b => b.onclick = () => recordEvent2(b.dataset.ev));
     $('#bSensor').onclick = async () => { const ok = await enableSensor(); if (!ok) alert('無法啟用感測器(桌機或權限被拒)。仍可用手動按鈕標記。'); viewNight(); };
     $('#bBed').onclick = () => { const x = session() || { events: [] }; x.bedAt = Date.now(); save(KEY_S, x); viewNight(); };
     $('#bTry').onclick = async () => { await enableSensor(); await new Promise(r => setTimeout(r, 400)); startNight(); };
@@ -143,8 +204,8 @@
   }
 
   const BRUSHES = [['sleep', '😴 睡著'], ['inbed', '🛏 躺著醒著'], ['nap', '💤 小睡'], ['caffeine', '☕ 咖啡因'], ['alcohol', '🍺 酒'],
-    ['med', '💊 助眠藥'], ['light', '☀ 照光'], ['exercise', '🏃 運動'], ['alarm', '⏰ 鬧鐘'], ['erase', '⌫ 清除']];
-  const ICON = { caffeine: '☕', alcohol: '🍺', med: '💊', light: '☀', exercise: '🏃', alarm: '⏰', nap: '💤' };
+    ['med', '💊 助眠藥'], ['light', '☀ 照光'], ['exercise', '🏃 運動'], ['ritual', '🧘 睡前儀式'], ['alarm', '⏰ 鬧鐘'], ['erase', '⌫ 清除']];
+  const ICON = { caffeine: '☕', alcohol: '🍺', med: '💊', light: '☀', exercise: '🏃', ritual: '🧘', alarm: '⏰', nap: '💤' };
   const tl = { brush: null, anchor: null, view: 'clock' };
 
   // ---- 時鐘圓餅:外圈 = 當天 00:00–24:00,內圈 = 前一晚 18:00–24:00;12 點鐘方向 = 00:00,順時針 ----
@@ -231,35 +292,37 @@
     if (d) { Object.assign(cur, d); cur._auto = []; }
     all[state.date] = cur; save(KEY_E, all);
     drawGrid(cur);
-    if (['alcohol', 'caffeine', 'med'].includes(tl.brush) && cur.slots && Object.values(cur.slots).some(a => a.includes(tl.brush))) openSheet(tl.brush);
+    if (['alcohol', 'caffeine', 'med', 'ritual'].includes(tl.brush) && cur.slots && Object.values(cur.slots).some(a => a.includes(tl.brush))) openSheet(tl.brush);
   }
 
-  const patch = (k, v) => { const all = entries(), cur = all[state.date] || { date: state.date }; cur[k] = v; all[state.date] = cur; save(KEY_E, all); };
+  const patch = (k, v, date) => { date = date || state.date; const all = entries(), cur = all[date] || { date }; cur[k] = v; all[date] = cur; save(KEY_E, all); };
+  const QCOL = ['#d64545', '#ec8a3b', '#e6c229', '#8bc34a', '#2e9e5b'];
   const defType = date => [0, 6].includes(new Date(date + 'T00:00').getDay()) ? '休息日' : '工作日';
   const FACES = ['😫 非常差', '😕 差', '😐 普通', '🙂 好', '😄 非常好'];
-  const PRESETS = { alcohol: ['啤酒 350cc', '紅酒 150cc', '烈酒 45cc'], caffeine: ['咖啡 250cc', '茶 250cc', '可樂 330cc'], med: [] };
+  const PRESETS = { alcohol: ['啤酒 350cc', '紅酒 150cc', '烈酒 45cc'], caffeine: ['咖啡 250cc', '茶 250cc', '可樂 330cc'], med: [], ritualNote: ['泡澡/泡腳', '閱讀', '冥想/呼吸', '伸展', '聽音樂', '寫日記', '熱飲(無咖啡因)', '關手機'] };
 
   /** 底部面板:睡眠品質、備註、酒/咖啡因/藥物內容(即時自動儲存)。focus = 要聚焦的欄位。 */
-  function openSheet(focus) {
-    const e = entries()[state.date] || {};
+  function openSheet(focus, date) {
+    date = date || state.date;
+    const e = entries()[date] || {};
     const f = (k, label, ph) => `<label>${label}</label><input data-s="${k}" value="${(e[k] ?? '').toString().replace(/"/g, '&quot;')}" placeholder="${ph}">
       <div class="chips">${(PRESETS[k] || []).map(p => `<button type="button" data-p="${k}" data-v="${p}">${p}</button>`).join('')}</div>`;
     const sh = $('#sheet');
     sh.innerHTML = `<div class="back" id="shBack"></div><div class="panel">
-      <h2>這一天的感受與內容</h2>
+      <h2>${date.slice(5).replace('-', '/')} 的感受與內容</h2>
       <label>自覺睡眠品質</label>
-      <div class="stars">${FACES.map((t, n) => `<button type="button" data-q="${n + 1}" class="${+e.quality === n + 1 ? 'on' : ''}">${t.split(' ')[0]}</button>`).join('')}</div>
+      <div class="stars">${FACES.map((t, n) => `<button type="button" data-q="${n + 1}" class="${+e.quality === n + 1 ? 'on' : ''}" style="border-color:${QCOL[n]};${+e.quality === n + 1 ? `background:${QCOL[n]};color:${n === 2 || n === 3 ? '#1b2437' : '#fff'}` : ''}">${t.split(' ')[0]}<br><b>${n + 1}</b></button>`).join('')}</div>
       <div class="hint" id="qtxt">${e.quality ? FACES[e.quality - 1] : '點一個表情'}</div>
-      ${f('note', '備註', '例如:感冒')}${f('alcohol', '🍺 酒 種類/量', '啤酒 250cc')}${f('caffeine', '☕ 咖啡因 種類/量', '咖啡 250cc')}${f('med', '💊 助眠藥物 名稱/劑量', 'Stilnox 50mg')}
+      ${f('note', '備註', '例如:感冒')}${f('ritualNote', '🧘 睡前儀式做了什麼', '例如:泡澡、閱讀')}${f('alcohol', '🍺 酒 種類/量', '啤酒 250cc')}${f('caffeine', '☕ 咖啡因 種類/量', '咖啡 250cc')}${f('med', '💊 助眠藥物 名稱/劑量', 'Stilnox 50mg')}
       <button class="btn" id="shDone">完成</button></div>`;
     sh.classList.add('show');
     sh.querySelectorAll('[data-q]').forEach(b => b.onclick = () => {
-      patch('quality', +b.dataset.q);
-      sh.querySelectorAll('[data-q]').forEach(x => x.classList.toggle('on', x === b)); $('#qtxt').textContent = FACES[+b.dataset.q - 1];
+      patch('quality', +b.dataset.q, date);
+      sh.querySelectorAll('[data-q]').forEach((x, n) => { const on = x === b; x.classList.toggle('on', on); x.style.background = on ? QCOL[n] : ''; x.style.color = on ? (n === 2 || n === 3 ? '#1b2437' : '#fff') : ''; }); $('#qtxt').textContent = FACES[+b.dataset.q - 1];
     });
-    sh.querySelectorAll('[data-s]').forEach(el => el.oninput = () => patch(el.dataset.s, el.value));
-    sh.querySelectorAll('[data-p]').forEach(b => b.onclick = () => { const el = sh.querySelector(`[data-s=${b.dataset.p}]`); el.value = b.dataset.v; patch(b.dataset.p, b.dataset.v); });
-    const close = () => { sh.classList.remove('show'); sh.innerHTML = ''; drawGrid(entries()[state.date] || {}); };
+    sh.querySelectorAll('[data-s]').forEach(el => el.oninput = () => patch(el.dataset.s, el.value, date));
+    sh.querySelectorAll('[data-p]').forEach(b => b.onclick = () => { const el = sh.querySelector(`[data-s=${b.dataset.p}]`); el.value = b.dataset.p === 'ritualNote' && el.value && !el.value.includes(b.dataset.v) ? el.value + '、' + b.dataset.v : (b.dataset.p === 'ritualNote' && el.value ? el.value : b.dataset.v); patch(b.dataset.p, el.value, date); });
+    const close = () => { sh.classList.remove('show'); sh.innerHTML = ''; if (state.tab === 'diary') drawGrid(entries()[state.date] || {}); };
     $('#shBack').onclick = $('#shDone').onclick = close;
     if (focus) { const el = sh.querySelector(`[data-s=${focus}]`); if (el) setTimeout(() => el.focus(), 50); }
   }
@@ -296,11 +359,11 @@
   }
 
   // ---- 一週條狀圖:每天一條橫條,橫軸 = 前一天 18:00 → 當天 24:00(30 小時),各列時間對齊 ----
-  const MCOL = { caffeine: '#8d5524', alcohol: '#d98e04', med: '#8e44ad', light: '#f4c20d', exercise: '#2e8b57', alarm: '#e03e3e' };
+  const MCOL = { caffeine: '#8d5524', alcohol: '#d98e04', med: '#8e44ad', light: '#f4c20d', exercise: '#2e8b57', ritual: '#17a2b8', alarm: '#e03e3e' };
   function viewWeek() {
     const all = entries(), end = new Date(state.date + 'T00:00'), days = [];
     for (let k = 6; k >= 0; k--) { const d = new Date(end); d.setDate(d.getDate() - k); days.push(ymd(d)); }
-    const W = 360, L = 52, BW = W - L - 6, SW = BW / 60, RH = 38, TOP = 22, H = TOP + days.length * RH + 4, p = [];
+    const W = 360, L = 66, BW = W - L - 6, SW = BW / 60, RH = 38, TOP = 22, H = TOP + days.length * RH + 4, p = [];
     p.push(`<rect x="${L + 8 * SW}" y="${TOP - 4}" width="${18 * SW}" height="${days.length * RH + 4}" fill="#eef0f8"/>`); // 22:00–07:00 夜間底色
     for (let k = 0; k <= 10; k++) {                                                                                   // 時刻軸
       const x = L + k * 6 * SW, h = (18 + 3 * k) % 24;
@@ -310,7 +373,9 @@
     days.forEach((d, r) => {
       const y = TOP + r * RH, slots = (all[d] || {}).slots || {}, has = Object.keys(slots).length;
       p.push(`<g data-d="${d}" style="cursor:pointer"><rect x="0" y="${y - 2}" width="${W}" height="${RH - 2}" fill="transparent"/>`);
-      p.push(`<text x="4" y="${y + 13}" font-size="11" fill="${has ? '#1b2437' : '#aaa'}">${d.slice(5).replace('-', '/')}</text><text x="4" y="${y + 26}" font-size="10" fill="#889">週${WD[new Date(d + 'T00:00').getDay()]}${(all[d] || {}).quality ? ' ' + ['😫', '😕', '😐', '🙂', '😄'][all[d].quality - 1] : ''}</text>`);
+      const q = (all[d] || {}).quality;
+      p.push(`<text x="4" y="${y + 13}" font-size="11" fill="${has ? '#1b2437' : '#aaa'}">${d.slice(5).replace('-', '/')}</text><text x="4" y="${y + 26}" font-size="10" fill="#889">週${WD[new Date(d + 'T00:00').getDay()]}</text>`);
+      if (q) p.push(`<circle cx="52" cy="${y + 16}" r="9" fill="${QCOL[q - 1]}"/><text x="52" y="${y + 16}" font-size="12" font-weight="700" fill="${q === 3 || q === 4 ? '#1b2437' : '#fff'}" text-anchor="middle" dominant-baseline="central">${q}</text>`);
       for (let s = 0; s < 60; s++) {
         const a2 = slots[s]; if (!a2) continue;
         const st = a2.find(k => COL[k]);
@@ -326,14 +391,15 @@
       const sl = idx('sleep'), inb = Object.keys(s).map(Number).filter(i => i < 36 && (s[i].includes('sleep') || s[i].includes('inbed')));
       return { sleep: sl.length / 2, bed: inb.length ? Math.min(...inb) : null, up: inb.length ? Math.max(...inb) + 1 : null, inBed: inb.length / 2 };
     }).filter(x => x.bed !== null);
+    const qs = days.map(d => +(all[d] || {}).quality).filter(Boolean);
     const avg = (arr) => arr.reduce((x, y) => x + y, 0) / arr.length, sT = i => TL.slotStart(Math.round(i));
-    const stats = st.length ? `<div class="tlsum">近 7 天有 ${st.length} 天紀錄 · 平均睡眠 <b>${avg(st.map(x => x.sleep)).toFixed(1)} 小時</b> · 平均上床 <b>${sT(avg(st.map(x => x.bed)))}</b> · 平均起床 <b>${sT(avg(st.map(x => x.up)))}</b> · 睡眠效率 <b>${Math.round(100 * st.reduce((x, y) => x + y.sleep, 0) / st.reduce((x, y) => x + y.inBed, 0))}%</b></div>` : '<div class="tlsum">這一週還沒有時鐘圖紀錄。</div>';
+    const stats = st.length ? `<div class="tlsum">近 7 天有 ${st.length} 天紀錄 · 平均睡眠 <b>${avg(st.map(x => x.sleep)).toFixed(1)} 小時</b> · 平均上床 <b>${sT(avg(st.map(x => x.bed)))}</b> · 平均起床 <b>${sT(avg(st.map(x => x.up)))}</b> ${qs.length ? ` · 平均品質 <b>${(qs.reduce((x, y) => x + y, 0) / qs.length).toFixed(1)}</b>` : ''} · 睡眠效率 <b>${Math.round(100 * st.reduce((x, y) => x + y.sleep, 0) / st.reduce((x, y) => x + y.inBed, 0))}%</b></div>` : '<div class="tlsum">這一週還沒有時鐘圖紀錄。</div>';
     const prev = new Date(end); prev.setDate(prev.getDate() - 7); const next = new Date(end); next.setDate(next.getDate() + 7);
     $('#app').innerHTML = `<div class="card"><h2>一週睡眠(${days[0].slice(5).replace('-', '/')} – ${days[6].slice(5).replace('-', '/')})</h2>
       <div class="row noprint" style="margin-bottom:6px"><button class="btn alt" id="wPrev" style="margin:0;padding:8px">◀ 前一週</button><button class="btn alt" id="wNext" style="margin:0;padding:8px">後一週 ▶</button></div>
       <svg viewBox="0 0 ${W} ${H}" style="width:100%;display:block">${p.join('')}</svg>
       <div class="hint" style="margin-top:6px"><span style="color:${COL.sleep}">■</span> 睡著 <span style="color:${COL.inbed}">■</span> 躺著醒著 <span style="color:${COL.nap}">■</span> 小睡 · 下方細條:
-        <span style="color:${MCOL.caffeine}">■</span>咖啡因 <span style="color:${MCOL.alcohol}">■</span>酒 <span style="color:${MCOL.med}">■</span>藥 <span style="color:${MCOL.light}">■</span>照光 <span style="color:${MCOL.exercise}">■</span>運動 <span style="color:${MCOL.alarm}">■</span>鬧鐘 · 灰底 = 22:00–07:00 · 點任一天可進入編輯</div>
+        <span style="color:${MCOL.caffeine}">■</span>咖啡因 <span style="color:${MCOL.alcohol}">■</span>酒 <span style="color:${MCOL.med}">■</span>藥 <span style="color:${MCOL.light}">■</span>照光 <span style="color:${MCOL.exercise}">■</span>運動 <span style="color:${MCOL.ritual}">■</span>睡前儀式 <span style="color:${MCOL.alarm}">■</span>鬧鐘 · 灰底 = 22:00–07:00 · 左側圓點 = 睡眠品質 1 差(紅)→5 好(綠) · 點任一天可進入編輯</div>
       ${stats}
       <button class="btn alt noprint" onclick="window.print()">列印 / 存成 PDF(給醫師)</button></div>`;
     $('#wPrev').onclick = () => { state.date = ymd(prev); viewWeek(); };
@@ -355,6 +421,7 @@
   }
 
   document.querySelectorAll('nav button').forEach(b => b.onclick = () => go(b.dataset.tab));
+  renderTimerBar();
   if (session() && session().tryAt && !session().outAt) { go('night'); } else go('night');
   window.__sleepdiary = { recordEvent, startNight, endNight, state };
 })();

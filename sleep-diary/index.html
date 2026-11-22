@@ -47,6 +47,11 @@
   #sheet .back { position:absolute; inset:0; background:#0006; }
   #sheet .panel { position:absolute; left:0; right:0; bottom:0; max-height:85vh; overflow-y:auto; background:#fff; border-radius:16px 16px 0 0; padding:16px 16px 24px; max-width:720px; margin:0 auto; }
   .chips { display:flex; gap:6px; flex-wrap:wrap; margin-top:6px; } .chips button { border:1px solid var(--line); background:#f4f6fb; border-radius:99px; padding:4px 12px; font-size:13px; }
+  #timerbar { position:fixed; left:0; right:0; bottom:46px; z-index:6; display:none; background:#14213d; color:#fff; font-size:14px; }
+  #timerbar .tb { display:flex; justify-content:space-between; align-items:center; padding:8px 12px; border-top:1px solid #2c3a5e; }
+  #timerbar button { background:#e03e3e; color:#fff; border:0; border-radius:8px; padding:6px 16px; font-size:14px; font-weight:600; }
+  #toast { position:fixed; left:50%; transform:translateX(-50%); bottom:110px; background:#000c; color:#fff; padding:10px 16px; border-radius:99px; z-index:30; font-size:14px; opacity:0; transition:opacity .2s; pointer-events:none; max-width:90%; text-align:center; }
+  #toast.show { opacity:1; }
   .tlsum { font-size:13px; color:var(--ink); background:#f4f6fb; border-radius:8px; padding:8px; margin-top:8px; }
   details > summary { cursor:pointer; font-weight:600; color:var(--pri); }
   /* 夜間模式:純黑,OLED 幾乎不耗電、不刺眼 */
@@ -62,9 +67,9 @@
 <header>🌙 睡眠日記 <span class="hint" style="color:#aab">(依台大睡眠中心睡眠日記表單)</span></header>
 <main id="app"></main>
 <nav>
-  <button data-tab="night">今晚</button>
+  <button data-tab="night">記錄</button>
   <button data-tab="diary">日記</button>
-  <button data-tab="week">週表</button>
+  <button data-tab="week">一週</button>
   <button data-tab="data">資料</button>
 </nav>
 <div id="night"></div>

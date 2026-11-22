@@ -45,4 +45,8 @@ const d2 = T.derive(sl);
 assert.strictEqual(d2.awakenings, 1);                 // 03:05–03:25 的醒來(<30 分)仍保留
 assert.strictEqual(d2.finalWake, '07:00');
 assert.strictEqual(d2.getUp, '07:30');
+// 睡前儀式 + 即時計時用 add(不切換)
+let r = {}; T.add(r, 'ritual', 9); T.add(r, 'ritual', 10); T.add(r, 'ritual', 10);
+assert.deepStrictEqual(r[10], ['ritual']); assert.strictEqual(T.derive(r).ritual, '22:30-23:30');
+T.add(r, 'nap', 3); T.add(r, 'sleep', 3); assert.deepStrictEqual(r[3], ['sleep']);
 console.log('timeline tests passed');

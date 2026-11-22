@@ -4,7 +4,7 @@
   // 時間軸視窗:起床日 D 的前一天 18:00 → D 當天 24:00,共 30 小時、每格 30 分鐘 = 60 格
   var N = 60, START_MIN = 18 * 60, STEP = 30, NIGHT_END = 36; // index 36 = D 12:00,之前視為「前一晚」
   var STATES = ['inbed', 'sleep', 'nap'];                     // 互斥:躺床醒著 / 睡著 / 小睡
-  var MARKS = ['caffeine', 'alcohol', 'med', 'light', 'exercise', 'alarm'];
+  var MARKS = ['caffeine', 'alcohol', 'med', 'light', 'exercise', 'ritual', 'alarm'];
 
   var pad = function (n) { return (n < 10 ? '0' : '') + n; };
   function hhmm(min) { min = ((min % 1440) + 1440) % 1440; return pad(Math.floor(min / 60)) + ':' + pad(min % 60); }
@@ -30,6 +30,16 @@
     return slots;
   }
 
+  /** 只新增、不切換(即時計時用):在第 i 格加上 kind;狀態類活動互斥。 */
+  function add(slots, kind, i) {
+    if (i < 0 || i >= N) return slots;
+    var cur = (slots[i] || []).slice();
+    if (STATES.indexOf(kind) >= 0) cur = cur.filter(function (k) { return STATES.indexOf(k) < 0; });
+    if (cur.indexOf(kind) < 0) cur.push(kind);
+    slots[i] = cur;
+    return slots;
+  }
+
   function idx(slots, pred) { var r = []; for (var i = 0; i < N; i++) if (slots[i] && pred(i, slots[i])) r.push(i); return r; }
   function runs(list) { // 排序後的 index → 連續區段 [[from,to],...]
     var out = [];
@@ -45,7 +55,7 @@
   function derive(slots) {
     if (!Object.keys(slots).length) return null;
     var out = { bedTime: '', tryTime: '', latencyMin: '', awakenings: '', awakeMin: '', finalWake: '', getUp: '',
-      alarm: '否', napCount: '', napMin: '', alcoholLast: '', caffeineLast: '', medTime: '', light: '', exercise: '' };
+      alarm: '否', napCount: '', napMin: '', alcoholLast: '', caffeineLast: '', medTime: '', light: '', exercise: '', ritual: '' };
     var inBed = idx(slots, function (i, a) { return i < NIGHT_END && (a.indexOf('inbed') >= 0 || a.indexOf('sleep') >= 0); });
     var sleep = idx(slots, function (i) { return i < NIGHT_END && has(slots, i, 'sleep'); });
     if (inBed.length) {
@@ -72,6 +82,7 @@
     var md = idx(slots, function (i) { return has(slots, i, 'med'); });
     if (md.length) out.medTime = slotStart(md[0]);
     out.light = runs(idx(slots, function (i) { return has(slots, i, 'light'); })).map(range).join(', ');
+    out.ritual = runs(idx(slots, function (i) { return has(slots, i, 'ritual'); })).map(range).join(', ');
     out.exercise = runs(idx(slots, function (i) { return has(slots, i, 'exercise'); })).map(range).join(', ');
     return out;
   }
@@ -94,7 +105,7 @@
     return slots;
   }
 
-  var api = { N: N, STATES: STATES, MARKS: MARKS, paint: paint, derive: derive, slotStart: slotStart, slotEnd: slotEnd, slotsFromSession: slotsFromSession };
+  var api = { N: N, STATES: STATES, MARKS: MARKS, paint: paint, add: add, derive: derive, slotStart: slotStart, slotEnd: slotEnd, slotsFromSession: slotsFromSession };
   if (typeof module !== 'undefined' && module.exports) module.exports = api;
   else root.SleepTimeline = api;
 })(typeof self !== 'undefined' ? self : this);

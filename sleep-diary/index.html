@@ -6,71 +6,76 @@
 <meta name="theme-color" content="#14213d">
 <title>睡眠日記</title>
 <style>
-  :root { --bg:#f4f6fb; --card:#fff; --ink:#1b2437; --sub:#6b7488; --pri:#2f4a8a; --line:#dde2ee; --ok:#2e7d4f; --warn:#b26a00; }
-  * { box-sizing:border-box; }
-  body { margin:0; font:16px/1.5 system-ui,-apple-system,"Noto Sans TC",sans-serif; background:var(--bg); color:var(--ink); padding-bottom:72px; }
-  header { background:#14213d; color:#fff; padding:14px 16px; font-weight:600; }
-  main { max-width:720px; margin:0 auto; padding:12px; }
-  nav { position:fixed; bottom:0; left:0; right:0; display:flex; background:#fff; border-top:1px solid var(--line); z-index:5; }
-  nav button { flex:1; border:0; background:none; padding:12px 0; font-size:14px; color:var(--sub); }
+  :root { --bg:#f4f6fb; --card:#fff; --ink:#1b2437; --sub:#6b7488; --pri:#2f4a8a; --line:#dde2ee; }
+  * { box-sizing:border-box; -webkit-tap-highlight-color:transparent; }
+  html,body { height:100%; margin:0; }
+  body { display:flex; flex-direction:column; height:100dvh; font:16px/1.4 system-ui,-apple-system,"Noto Sans TC",sans-serif; background:var(--bg); color:var(--ink); }
+  header { flex:0 0 36px; background:#14213d; color:#fff; font-weight:600; display:flex; align-items:center; padding:0 14px; }
+  main { flex:1; min-height:0; overflow-y:auto; padding:8px 10px; max-width:720px; width:100%; margin:0 auto; }
+  body.hasTimer main { padding-bottom:52px; }
+  nav { flex:0 0 52px; display:flex; background:#fff; border-top:1px solid var(--line); z-index:5; }
+  nav button { flex:1; border:0; background:none; font-size:12px; color:var(--sub); display:flex; flex-direction:column; align-items:center; justify-content:center; gap:1px; }
+  nav button .i { font-size:20px; line-height:1; }
   nav button.on { color:var(--pri); font-weight:700; box-shadow:inset 0 3px var(--pri); }
-  .card { background:var(--card); border-radius:12px; padding:14px; margin:0 0 12px; box-shadow:0 1px 3px #0001; }
-  h2 { font-size:17px; margin:0 0 8px; } h3 { font-size:15px; margin:14px 0 6px; color:var(--pri); }
-  label { display:block; margin:10px 0 2px; font-size:14px; color:var(--sub); }
   input,select,textarea { width:100%; font:inherit; padding:9px; border:1px solid var(--line); border-radius:8px; background:#fff; color:var(--ink); }
-  .row { display:flex; gap:8px; } .row > * { flex:1; }
-  .btn { display:block; width:100%; border:0; border-radius:10px; padding:14px; font-size:17px; font-weight:600; background:var(--pri); color:#fff; margin-top:10px; }
+  label { display:block; margin:10px 0 2px; font-size:14px; color:var(--sub); }
+  h2 { font-size:17px; margin:0 0 6px; }
+  .btn { display:block; width:100%; border:0; border-radius:12px; padding:13px; font-size:16px; font-weight:600; background:var(--pri); color:#fff; margin-top:10px; }
   .btn.alt { background:#e8ecf7; color:var(--pri); } .btn.danger { background:#7a2b2b; }
-  .hint { font-size:13px; color:var(--sub); } .auto { color:var(--warn); font-size:12px; margin-left:6px; }
-  .pill { display:inline-block; padding:2px 10px; border-radius:99px; font-size:13px; background:#e8ecf7; }
-  .pill.ok { background:#dff3e6; color:var(--ok); } .pill.warn { background:#fdebd0; color:var(--warn); }
-  .stars { display:flex; gap:6px; } .stars button { flex:1; padding:10px 0; border:1px solid var(--line); border-radius:8px; background:#fff; font-size:16px; }
-  .stars button.on { background:var(--pri); color:#fff; border-color:var(--pri); }
-  table { border-collapse:collapse; width:100%; font-size:12px; } th,td { border:1px solid #333; padding:3px 4px; text-align:center; vertical-align:middle; }
-  th.l { background:#e5e5e5; text-align:left; white-space:nowrap; } .scroll { overflow-x:auto; }
-  ul.tl { padding-left:18px; margin:6px 0; font-size:14px; }
-  /* 24 小時時間軸 */
-  .brushes { display:flex; gap:6px; overflow-x:auto; padding:4px 0 8px; position:sticky; top:0; background:var(--card); z-index:4; }
-  .brushes button { flex:0 0 auto; border:2px solid var(--line); background:#fff; border-radius:10px; padding:6px 10px; font-size:14px; white-space:nowrap; }
-  .brushes button.on { border-color:var(--pri); background:#e8ecf7; font-weight:700; }
-  .tl-help { font-size:13px; color:var(--sub); margin:2px 0 6px; min-height:20px; }
-  .grid { border:1px solid var(--line); border-radius:8px; overflow:hidden; }
-  .hr { display:flex; align-items:stretch; border-bottom:1px solid var(--line); min-height:38px; }
-  .hr.day0 { border-top:3px solid #888; }
-  .hr .lb { flex:0 0 52px; font-size:12px; color:var(--sub); padding:2px 6px; background:#fafbfe; display:flex; align-items:center; }
-  .cell { flex:1; border-left:1px solid var(--line); display:flex; align-items:center; justify-content:center; gap:2px; font-size:15px; user-select:none; -webkit-tap-highlight-color:transparent; }
-  .cell.dark { background:#f1f3f9; }
-  .cell.sleep { background:#2f4a8a; color:#fff; } .cell.inbed { background:#f6c177; } .cell.nap { background:#9ecbf5; }
-  .cell.anchor { outline:3px solid #e03e3e; outline-offset:-3px; }
-  [data-v].on { background:var(--pri) !important; color:#fff !important; }
+  .hint { font-size:13px; color:var(--sub); }
+  .g3 { display:grid; grid-template-columns:repeat(3,1fr); gap:8px; margin-bottom:8px; }
+  .rec { display:flex; flex-direction:column; gap:8px; height:100%; } .rec .g3 { margin:0; grid-auto-rows:1fr; } .rec .g3.t { flex:4; } .rec .g3.e { flex:2; } .rec .nightrow { flex:3; }
+  .tb { background:#fff; border:1px solid var(--line); border-radius:14px; padding:10px 2px; display:flex; flex-direction:column; align-items:center; gap:2px; font-size:13px; color:var(--ink); min-height:76px; justify-content:center; }
+  .tb .i { font-size:27px; line-height:1.1; }
+  .tb.run { background:#7a2b2b; color:#fff; border-color:#7a2b2b; }
+  .tb.ev { min-height:60px; flex-direction:row; justify-content:center; gap:6px; }
+  .nightrow { display:grid; grid-template-columns:1fr 2fr; gap:8px; }
+  .big { background:#14213d; color:#fff; border:0; border-radius:14px; font-size:20px; font-weight:700; min-height:92px; }
+  .bar { display:flex; gap:6px; align-items:center; margin-bottom:8px; }
+  .bar input[type=date] { flex:1; min-width:0; padding:7px; }
+  .ib { flex:0 0 auto; border:1px solid var(--line); background:#fff; border-radius:10px; min-width:38px; height:38px; font-size:17px; padding:0 8px; color:var(--ink); }
+  .ib.t { font-size:13px; font-weight:600; color:var(--pri); }
+  .brush { display:grid; grid-template-columns:repeat(7,1fr); gap:5px; margin-bottom:6px; }
+  .brush button { border:2px solid var(--line); background:#fff; border-radius:10px; height:40px; font-size:20px; padding:0; }
+  .brush button.on { border-color:var(--pri); background:#e8ecf7; }
+  .clock { width:min(100%,46vh); display:block; margin:0 auto; touch-action:manipulation; }
+  .wk { width:100%; max-height:62vh; display:block; }
+  .stats { display:flex; justify-content:space-around; background:#fff; border-radius:12px; padding:8px 4px; margin-top:8px; font-size:15px; font-weight:600; }
+  .stars { display:flex; gap:6px; } .stars button { flex:1; padding:6px 0; border:2px solid var(--line); border-radius:10px; background:#fff; font-size:22px; line-height:1.2; }
+  .chips { display:flex; gap:6px; flex-wrap:wrap; margin-top:6px; } .chips button { border:1px solid var(--line); background:#f4f6fb; border-radius:99px; padding:4px 12px; font-size:13px; }
+  details > summary { cursor:pointer; font-weight:600; color:var(--pri); margin-top:10px; }
+  .kv { display:grid; grid-template-columns:auto 1fr; gap:6px 12px; font-size:15px; } .kv b { text-align:right; }
+  .lg { display:grid; grid-template-columns:1fr 1fr; gap:6px 10px; font-size:14px; } .lg i { display:inline-block; width:12px; height:12px; border-radius:3px; margin-right:6px; vertical-align:-1px; }
+  /* 彈出面板 */
   #sheet { position:fixed; inset:0; z-index:15; display:none; } #sheet.show { display:block; }
   #sheet .back { position:absolute; inset:0; background:#0006; }
-  #sheet .panel { position:absolute; left:0; right:0; bottom:0; max-height:85vh; overflow-y:auto; background:#fff; border-radius:16px 16px 0 0; padding:16px 16px 24px; max-width:720px; margin:0 auto; }
-  .chips { display:flex; gap:6px; flex-wrap:wrap; margin-top:6px; } .chips button { border:1px solid var(--line); background:#f4f6fb; border-radius:99px; padding:4px 12px; font-size:13px; }
-  #timerbar { position:fixed; left:0; right:0; bottom:46px; z-index:6; display:none; background:#14213d; color:#fff; font-size:14px; }
-  #timerbar .tb { display:flex; justify-content:space-between; align-items:center; padding:8px 12px; border-top:1px solid #2c3a5e; }
+  #sheet .panel { position:absolute; left:0; right:0; bottom:0; max-height:88vh; overflow-y:auto; background:#fff; border-radius:16px 16px 0 0; padding:16px 16px 20px; max-width:720px; margin:0 auto; }
+  .intro { text-align:center; } .intro .big-i { font-size:54px; line-height:1.2; } .intro p { margin:6px 0; font-size:16px; }
+  .dots { display:flex; justify-content:center; gap:6px; margin:10px 0 0; } .dots i { width:8px; height:8px; border-radius:50%; background:#cfd5e6; } .dots i.on { background:var(--pri); }
+  .row2 { display:grid; grid-template-columns:1fr 2fr; gap:8px; } .row2 .btn { margin-top:12px; }
+  /* 常駐計時列、提示 */
+  #timerbar { position:fixed; left:0; right:0; bottom:52px; z-index:6; display:none; background:#14213d; color:#fff; font-size:14px; }
+  #timerbar .tbr { display:flex; justify-content:space-between; align-items:center; padding:7px 12px; border-top:1px solid #2c3a5e; }
   #timerbar button { background:#e03e3e; color:#fff; border:0; border-radius:8px; padding:6px 16px; font-size:14px; font-weight:600; }
-  #toast { position:fixed; left:50%; transform:translateX(-50%); bottom:110px; background:#000c; color:#fff; padding:10px 16px; border-radius:99px; z-index:30; font-size:14px; opacity:0; transition:opacity .2s; pointer-events:none; max-width:90%; text-align:center; }
+  #toast { position:fixed; left:50%; transform:translateX(-50%); bottom:120px; background:#000c; color:#fff; padding:9px 16px; border-radius:99px; z-index:30; font-size:14px; opacity:0; transition:opacity .2s; pointer-events:none; max-width:90%; text-align:center; }
   #toast.show { opacity:1; }
-  .tlsum { font-size:13px; color:var(--ink); background:#f4f6fb; border-radius:8px; padding:8px; margin-top:8px; }
-  details > summary { cursor:pointer; font-weight:600; color:var(--pri); }
-  /* 夜間模式:純黑,OLED 幾乎不耗電、不刺眼 */
+  /* 夜間模式:純黑 */
   #night { position:fixed; inset:0; background:#000; color:#333; z-index:20; display:none; flex-direction:column; justify-content:space-between; align-items:center; padding:28px 18px; text-align:center; }
   #night.show { display:flex; }
-  #night .st { font-size:15px; margin-top:40px; } #night .st b { color:#444; font-size:20px; display:block; margin-bottom:6px; }
+  #night .st { font-size:15px; margin-top:40px; } #night .st b { color:#444; font-size:26px; display:block; margin-bottom:6px; }
   #night .ctl { width:100%; display:flex; flex-direction:column; gap:10px; }
   #night button { background:#0d0d0d; color:#3a3a3a; border:1px solid #1a1a1a; border-radius:10px; padding:16px; font-size:16px; }
-  @media print { header,nav,.noprint { display:none !important; } body { background:#fff; padding:0; } .card { box-shadow:none; padding:0; } }
+  @media print { header,nav,.noprint,#timerbar { display:none !important; } body { display:block; height:auto; background:#fff; } main { overflow:visible; } }
 </style>
 </head>
 <body>
-<header>🌙 睡眠日記 <span class="hint" style="color:#aab">(依台大睡眠中心睡眠日記表單)</span></header>
+<header>🌙 睡眠日記</header>
 <main id="app"></main>
 <nav>
-  <button data-tab="night">記錄</button>
-  <button data-tab="diary">日記</button>
-  <button data-tab="week">一週</button>
-  <button data-tab="data">資料</button>
+  <button data-tab="night"><span class="i">⏱</span>記錄</button>
+  <button data-tab="diary"><span class="i">🕐</span>日記</button>
+  <button data-tab="week"><span class="i">📊</span>一週</button>
+  <button data-tab="data"><span class="i">⚙️</span>設定</button>
 </nav>
 <div id="night"></div>
 <div id="sheet"></div>

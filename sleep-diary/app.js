@@ -27,7 +27,7 @@
     ['evening', '睡前填寫(當天)'],
     ['napCount', '小睡次數'], ['napMin', '小睡總分鐘'], ['alcohol', '酒類/量(cc)'], ['alcoholLast', '最後飲酒時間'],
     ['caffeine', '咖啡因飲料/量(cc)'], ['caffeineLast', '最後咖啡因時間'], ['med', '助眠藥物/劑量'], ['medTime', '服藥時間'],
-    ['light', '照光(時段)'], ['exercise', '運動(時段)']
+    ['light', '照光(時段)'], ['exercise', '運動(時段)'], ['ritual', '睡前儀式(時段)'], ['ritualNote', '睡前儀式內容'], ['screen', '睡前看螢幕(時段)'], ['meal', '用餐(時段)']
   ];
 
   // ---------- 感測器 ----------
@@ -123,7 +123,7 @@
 
   // ---------- 即時記錄:按「開始」「結束」自動把這段時間塗到時鐘上 ----------
   const KEY_T = 'sleepdiary.timers';
-  const TIMERS = [['light', '☀ 照光'], ['exercise', '🏃 運動'], ['ritual', '🧘 睡前儀式'], ['nap', '💤 小睡']];
+  const TIMERS = [['light', '☀ 照光'], ['exercise', '🏃 運動'], ['ritual', '🧘 睡前儀式'], ['screen', '📱 睡前看螢幕'], ['meal', '🍽 用餐'], ['nap', '💤 小睡']];
   const EVENTS = [['caffeine', '☕ 咖啡因'], ['alcohol', '🍺 酒'], ['med', '💊 助眠藥']];
   const labelOf = k => (TIMERS.concat(EVENTS).find(x => x[0] === k) || [k, k])[1];
   const timers = () => load(KEY_T, {});
@@ -204,8 +204,8 @@
   }
 
   const BRUSHES = [['sleep', '😴 睡著'], ['inbed', '🛏 躺著醒著'], ['nap', '💤 小睡'], ['caffeine', '☕ 咖啡因'], ['alcohol', '🍺 酒'],
-    ['med', '💊 助眠藥'], ['light', '☀ 照光'], ['exercise', '🏃 運動'], ['ritual', '🧘 睡前儀式'], ['alarm', '⏰ 鬧鐘'], ['erase', '⌫ 清除']];
-  const ICON = { caffeine: '☕', alcohol: '🍺', med: '💊', light: '☀', exercise: '🏃', ritual: '🧘', alarm: '⏰', nap: '💤' };
+    ['med', '💊 助眠藥'], ['light', '☀ 照光'], ['exercise', '🏃 運動'], ['ritual', '🧘 睡前儀式'], ['screen', '📱 睡前看螢幕'], ['meal', '🍽 用餐'], ['alarm', '⏰ 鬧鐘'], ['erase', '⌫ 清除']];
+  const ICON = { caffeine: '☕', alcohol: '🍺', med: '💊', light: '☀', exercise: '🏃', ritual: '🧘', screen: '📱', meal: '🍽', alarm: '⏰', nap: '💤' };
   const tl = { brush: null, anchor: null, view: 'clock' };
 
   // ---- 時鐘圓餅:外圈 = 當天 00:00–24:00,內圈 = 前一晚 18:00–24:00;12 點鐘方向 = 00:00,順時針 ----
@@ -359,7 +359,7 @@
   }
 
   // ---- 一週條狀圖:每天一條橫條,橫軸 = 前一天 18:00 → 當天 24:00(30 小時),各列時間對齊 ----
-  const MCOL = { caffeine: '#8d5524', alcohol: '#d98e04', med: '#8e44ad', light: '#f4c20d', exercise: '#2e8b57', ritual: '#17a2b8', alarm: '#e03e3e' };
+  const MCOL = { caffeine: '#8d5524', alcohol: '#d98e04', med: '#8e44ad', light: '#f4c20d', exercise: '#2e8b57', ritual: '#17a2b8', screen: '#546e7a', meal: '#e85d9a', alarm: '#e03e3e' };
   function viewWeek() {
     const all = entries(), end = new Date(state.date + 'T00:00'), days = [];
     for (let k = 6; k >= 0; k--) { const d = new Date(end); d.setDate(d.getDate() - k); days.push(ymd(d)); }
@@ -399,7 +399,7 @@
       <div class="row noprint" style="margin-bottom:6px"><button class="btn alt" id="wPrev" style="margin:0;padding:8px">◀ 前一週</button><button class="btn alt" id="wNext" style="margin:0;padding:8px">後一週 ▶</button></div>
       <svg viewBox="0 0 ${W} ${H}" style="width:100%;display:block">${p.join('')}</svg>
       <div class="hint" style="margin-top:6px"><span style="color:${COL.sleep}">■</span> 睡著 <span style="color:${COL.inbed}">■</span> 躺著醒著 <span style="color:${COL.nap}">■</span> 小睡 · 下方細條:
-        <span style="color:${MCOL.caffeine}">■</span>咖啡因 <span style="color:${MCOL.alcohol}">■</span>酒 <span style="color:${MCOL.med}">■</span>藥 <span style="color:${MCOL.light}">■</span>照光 <span style="color:${MCOL.exercise}">■</span>運動 <span style="color:${MCOL.ritual}">■</span>睡前儀式 <span style="color:${MCOL.alarm}">■</span>鬧鐘 · 灰底 = 22:00–07:00 · 左側圓點 = 睡眠品質 1 差(紅)→5 好(綠) · 點任一天可進入編輯</div>
+        <span style="color:${MCOL.caffeine}">■</span>咖啡因 <span style="color:${MCOL.alcohol}">■</span>酒 <span style="color:${MCOL.med}">■</span>藥 <span style="color:${MCOL.light}">■</span>照光 <span style="color:${MCOL.exercise}">■</span>運動 <span style="color:${MCOL.ritual}">■</span>睡前儀式 <span style="color:${MCOL.screen}">■</span>看螢幕 <span style="color:${MCOL.meal}">■</span>用餐 <span style="color:${MCOL.alarm}">■</span>鬧鐘 · 灰底 = 22:00–07:00 · 左側圓點 = 睡眠品質 1 差(紅)→5 好(綠) · 點任一天可進入編輯</div>
       ${stats}
       <button class="btn alt noprint" onclick="window.print()">列印 / 存成 PDF(給醫師)</button></div>`;
     $('#wPrev').onclick = () => { state.date = ymd(prev); viewWeek(); };

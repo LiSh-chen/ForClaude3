@@ -49,4 +49,6 @@ assert.strictEqual(d2.getUp, '07:30');
 let r = {}; T.add(r, 'ritual', 9); T.add(r, 'ritual', 10); T.add(r, 'ritual', 10);
 assert.deepStrictEqual(r[10], ['ritual']); assert.strictEqual(T.derive(r).ritual, '22:30-23:30');
 T.add(r, 'nap', 3); T.add(r, 'sleep', 3); assert.deepStrictEqual(r[3], ['sleep']);
+let u = {}; T.add(u, 'screen', 10); T.add(u, 'meal', 2); T.add(u, 'meal', 3);
+assert.strictEqual(T.derive(u).screen, '23:00-23:30'); assert.strictEqual(T.derive(u).meal, '19:00-20:00');
 console.log('timeline tests passed');

@@ -195,14 +195,18 @@
   // ---------- 記錄 ----------
   function viewNight() {
     const s = session(), T = timers(), inNight = s && s.tryAt && !s.outAt;
+    const nT = Object.keys(T).length;
     $('#app').innerHTML = `<div class="rec">
+      <div class="sec">⏱ 即時計時 <small>${nT ? nT + ' 項進行中' : '點一下開始,再點一下結束'}</small></div>
       <div class="g3 t">${TIMERS.map(([k, ic, t]) => T[k]
-        ? `<button class="tb run" data-t="${k}"><span class="i">⏹</span>${t}<small>${hm(T[k])}</small></button>`
-        : `<button class="tb" data-t="${k}"><span class="i">${ic}</span>${t}</button>`).join('')}</div>
+        ? `<button class="tb run" data-t="${k}"><span class="i">⏹</span>${t}<small>自 ${hm(T[k])}</small></button>`
+        : `<button class="tb" data-t="${k}"><span class="i">${ic}</span>${t}<small>開始</small></button>`).join('')}</div>
+      <div class="sec">⚡ 單次事件 <small>記下「現在」</small></div>
       <div class="g3 e">${EVENTS.map(([k, ic, t]) => `<button class="tb ev" data-ev="${k}"><span class="i" style="font-size:22px">${ic}</span>${t}</button>`).join('')}</div>
+      <div class="sec">🌙 睡眠 <small>手機螢幕朝下放床邊</small></div>
       <div class="nightrow">
-        <button class="tb" id="bBed"><span class="i">🛏</span>${s && s.bedAt ? '躺上床 ' + hm(s.bedAt) : '躺上床'}</button>
-        <button class="big" id="bTry">${inNight ? '🌙 回夜間畫面' : '🌙 關燈睡覺'}</button>
+        <button class="tb" id="bBed"><span class="i">🛏</span>躺上床<small>${s && s.bedAt ? '已記 ' + hm(s.bedAt) : '記下上床時間'}</small></button>
+        <button class="big" id="bTry">${inNight ? '🌙 回夜間畫面' : '🌙 關燈睡覺'}<small>${inNight ? '睡眠記錄進行中' : '翻面偵測 · 自動記錄醒來'}</small></button>
       </div></div>`;
     document.querySelectorAll('[data-t]').forEach(b => b.onclick = () => (timers()[b.dataset.t] ? endTimer : startTimer)(b.dataset.t));
     document.querySelectorAll('[data-ev]').forEach(b => b.onclick = () => recordEvent2(b.dataset.ev));
@@ -255,6 +259,9 @@
     } else c.push(`<tspan x="200" dy="0" font-size="26">${tl.brush ? (BRUSHES.find(b => b[0] === tl.brush) || [])[1] : '👆'}</tspan>`);
     parts.push(`<text x="200" y="${sleepN && tl.anchor == null ? 190 : 205}" text-anchor="middle" pointer-events="none">${c.join('')}</text>`);
     $('#grid').innerHTML = `<svg class="clock" viewBox="0 0 400 400">${parts.join('')}</svg>`;
+    const bi = BRUSHES.find(b => b[0] === tl.brush), stl = $('#tlstat'), mini = $('#mini');
+    if (stl) stl.textContent = !bi ? '👆 先選上方一個活動,再點圓上的時段' : `${bi[1]} ${bi[2]} · ${tl.anchor == null ? '點起點' : '點終點'}`;
+    if (mini) mini.innerHTML = [['🛏 上床', d && d.bedTime || '—'], ['🌅 起床', d && d.getUp || '—'], ['👀 中途醒', d && d.awakenings !== '' && d.awakenings !== undefined ? d.awakenings + ' 次' : '—']].map(([l, v]) => `<div class="mc"><small>${l}</small><b>${v}</b></div>`).join('');
   }
 
   function tapSlot(i) {
@@ -322,7 +329,9 @@
         <button class="ib t" id="bType">${e.dayType || defType(state.date)}</button><button class="ib" id="bStar">⭐</button><button class="ib" id="bInfo">ⓘ</button>
       </div>
       <div class="brush">${BRUSHES.map(([k, ic, t]) => `<button type="button" data-b="${k}" title="${t}">${ic}</button>`).join('')}</div>
-      <div id="grid"></div>`;
+      <div class="stl" id="tlstat"></div>
+      <div id="grid"></div>
+      <div class="g3 mini" id="mini"></div>`;
     if (!e.dayType) patch('dayType', defType(state.date));
     drawClock(e);
     document.querySelectorAll('[data-b]').forEach(b => { b.classList.toggle('on', b.dataset.b === tl.brush); b.onclick = () => {
@@ -352,7 +361,7 @@
   function viewWeek() {
     const all = entries(), end = new Date(state.date + 'T00:00'), days = [];
     for (let k = 6; k >= 0; k--) { const d = new Date(end); d.setDate(d.getDate() - k); days.push(ymd(d)); }
-    const W = 360, L = 66, BW = W - L - 6, SW = BW / 60, RH = 38, TOP = 22, H = TOP + days.length * RH + 4, p = [];
+    const W = 360, L = 66, BW = W - L - 6, SW = BW / 60, RH = 44, TOP = 22, H = TOP + days.length * RH + 4, p = [];
     p.push(`<rect x="${L + 8 * SW}" y="${TOP - 4}" width="${18 * SW}" height="${days.length * RH + 4}" fill="#eef0f8"/>`);
     for (let k = 0; k <= 10; k++) {
       const x = L + k * 6 * SW, h = (18 + 3 * k) % 24;
@@ -377,11 +386,16 @@
       return { sleep: Object.keys(s).filter(i => +i < 36 && s[i].includes('sleep')).length / 2, bed: inb.length ? Math.min(...inb) : null, up: inb.length ? Math.max(...inb) + 1 : null, inBed: inb.length / 2 };
     }).filter(x => x.bed !== null);
     const qs = days.map(d => +(all[d] || {}).quality).filter(Boolean);
+    const per = days.map(d => { const s = (all[d] || {}).slots; if (!s || !Object.keys(s).length) return null; const k = Object.keys(s).map(Number).filter(i => i < 36 && (s[i].includes('sleep') || s[i].includes('inbed'))); return { d, sleep: Object.keys(s).filter(i => +i < 36 && s[i].includes('sleep')).length / 2, bed: k.length ? Math.min(...k) : null }; }).filter(x => x && x.bed !== null);
+    const mmdd = d => d.slice(5).replace('-', '/');
+    const tips = per.length >= 2 ? (() => { const lo = per.reduce((x, y) => y.sleep < x.sleep ? y : x), hi = per.reduce((x, y) => y.sleep > x.sleep ? y : x), beds = per.map(x => x.bed), gap = (Math.max(...beds) - Math.min(...beds)) / 2;
+      return `<div class="srow" style="margin:8px 0 0;padding:8px 12px;font-size:14px;line-height:1.7">⏳ 最長 <b>${mmdd(hi.d)}</b> ${hi.sleep}h · 最短 <b>${mmdd(lo.d)}</b> ${lo.sleep}h<br>🕒 上床時間落差 <b>${gap}</b> 小時 ${gap <= 1 ? '(很規律 👍)' : gap >= 2 ? '(落差偏大)' : ''}</div>`; })() : '';
     const avg = arr => arr.reduce((x, y) => x + y, 0) / arr.length, sT = i => TL.slotStart(Math.round(i));
-    const stats = st.length ? `<div class="stats"><span>😴${avg(st.map(x => x.sleep)).toFixed(1)}h</span><span>🛏${sT(avg(st.map(x => x.bed)))}</span><span>🌅${sT(avg(st.map(x => x.up)))}</span>${qs.length ? `<span>⭐${avg(qs).toFixed(1)}</span>` : ''}<span>📊${Math.round(100 * st.reduce((x, y) => x + y.sleep, 0) / st.reduce((x, y) => x + y.inBed, 0))}%</span></div>` : '';
+    const stats = st.length ? `<div class="stats"><span>😴 ${avg(st.map(x => x.sleep)).toFixed(1)}h<small>平均睡眠</small></span><span>🛏 ${sT(avg(st.map(x => x.bed)))}<small>平均上床</small></span><span>🌅 ${sT(avg(st.map(x => x.up)))}<small>平均起床</small></span>${qs.length ? `<span>⭐ ${avg(qs).toFixed(1)}<small>平均品質</small></span>` : ''}<span>📊 ${Math.round(100 * st.reduce((x, y) => x + y.sleep, 0) / st.reduce((x, y) => x + y.inBed, 0))}%<small>睡眠效率</small></span></div>` : '<div class="stats" style="font-weight:400;color:var(--sub)">這週還沒有紀錄,到「記錄」或「日記」開始吧</div>';
+    const leg = `<div class="leg"><span><i style="background:${COL.sleep}"></i>睡著</span><span><i style="background:${COL.inbed}"></i>躺著醒著</span><span><i style="background:${COL.nap}"></i>小睡</span><span><i style="background:#17a2b8"></i>活動(細條)</span><span><i style="background:${QCOL[0]};border-radius:50%"></i>→<i style="background:${QCOL[4]};border-radius:50%;margin-left:4px"></i>品質 1→5</span></div>`;
     const prev = new Date(end); prev.setDate(prev.getDate() - 7); const next = new Date(end); next.setDate(next.getDate() + 7);
     $('#app').innerHTML = `<div class="bar"><button class="ib" id="wPrev">◀</button><b style="flex:1;text-align:center">${days[0].slice(5).replace('-', '/')} – ${days[6].slice(5).replace('-', '/')}</b><button class="ib" id="wNext">▶</button><button class="ib noprint" id="wInfo">ⓘ</button><button class="ib noprint" id="wPrint">🖨</button></div>
-      <svg class="wk" viewBox="0 0 ${W} ${H}">${p.join('')}</svg>${stats}`;
+      <svg class="wk" viewBox="0 0 ${W} ${H}">${p.join('')}</svg>${stats}${tips}${leg}`;
     $('#wPrev').onclick = () => { state.date = ymd(prev); viewWeek(); };
     $('#wNext').onclick = () => { state.date = ymd(next); viewWeek(); };
     $('#wInfo').onclick = openLegend; $('#wPrint').onclick = () => window.print();
@@ -391,10 +405,12 @@
   // ---------- 設定 ----------
   function viewData() {
     const all = entries(), keys = ['date'].concat(FIELDS.map(f => f[0]).filter(k => !['morning', 'evening'].includes(k)));
-    $('#app').innerHTML = `<button class="btn" id="bCsv">📤 匯出 CSV</button>
-      <button class="btn alt" id="bHelp">❓ 使用導覽</button>
-      <button class="btn danger" id="bClr">🗑 清除所有資料</button>
-      <p class="hint" style="text-align:center;margin-top:14px">${Object.keys(all).length} 天 · 資料只存在這支手機</p>`;
+    const n = Object.keys(all).length;
+    $('#app').innerHTML = `
+      <div class="srow"><button class="btn" id="bCsv">📤 匯出 CSV</button><p>把全部紀錄存成試算表檔,可拿給醫師或用 Excel 開啟</p></div>
+      <div class="srow"><button class="btn alt" id="bHelp">❓ 使用導覽</button><p>重新查看每個按鈕與圖示的用法</p></div>
+      <div class="srow"><button class="btn danger" id="bClr">🗑 清除所有資料</button><p>刪除這支手機上的全部紀錄,無法復原</p></div>
+      <p class="hint" style="text-align:center;margin:4px 0 0">📅 已記錄 ${n} 天 · 🔒 資料只存在這支手機,不會上傳</p>`;
     $('#bHelp').onclick = () => showIntro(0);
     $('#bCsv').onclick = () => {
       const q = v => `"${String(v ?? '').replace(/"/g, '""')}"`;

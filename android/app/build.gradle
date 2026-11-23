@@ -2,12 +2,22 @@ plugins { id 'com.android.application' }
 android {
     namespace 'tw.sleepdiary'
     compileSdk 34
+    // 固定簽章金鑰:每次建置簽章一致,才能直接覆蓋更新(否則會顯示「未安裝應用程式」)
+    signingConfigs {
+        debug {
+            storeFile file('../sleepdiary-debug.keystore')
+            storePassword 'sleepdiary'
+            keyAlias 'sleepdiary'
+            keyPassword 'sleepdiary'
+        }
+    }
     defaultConfig {
         applicationId 'tw.sleepdiary'
         minSdk 24
         targetSdk 34
-        versionCode 1
-        versionName '0.1'
+        // 版本號隨 CI 執行次數遞增,更新時不會被判定為降版
+        versionCode (System.getenv('GITHUB_RUN_NUMBER') ?: '1').toInteger()
+        versionName '0.2'
     }
     buildTypes { release { minifyEnabled false } }
     compileOptions { sourceCompatibility JavaVersion.VERSION_17; targetCompatibility JavaVersion.VERSION_17 }

@@ -3,4 +3,4 @@ local.properties
 build/
 app/build/
 app/src/main/assets/www/
-*.keystore
+!sleepdiary-debug.keystore

@@ -424,7 +424,7 @@
       <svg class="wk" viewBox="0 0 ${W} ${H}">${p.join('')}</svg>${stats}${tips}${leg}`;
     $('#wPrev').onclick = () => { state.date = ymd(prev); viewWeek(); };
     $('#wNext').onclick = () => { state.date = ymd(next); viewWeek(); };
-    $('#wInfo').onclick = openLegend; $('#wPrint').onclick = () => window.print();
+    $('#wInfo').onclick = openLegend; $('#wPrint').onclick = () => (window.AndroidBridge ? AndroidBridge.print() : window.print());
     document.querySelectorAll('[data-d]').forEach(g => g.onclick = () => { state.date = g.dataset.d; go('diary'); });
   }
 
@@ -441,6 +441,7 @@
     $('#bCsv').onclick = () => {
       const q = v => `"${String(v ?? '').replace(/"/g, '""')}"`;
       const csv = '﻿' + keys.join(',') + '\n' + Object.keys(all).sort().map(d => keys.map(k => q(all[d][k])).join(',')).join('\n');
+      if (window.AndroidBridge) { AndroidBridge.saveFile('sleep-diary.csv', 'text/csv', csv); return; }   // APK 內:存到「下載」
       const a = document.createElement('a'); a.href = URL.createObjectURL(new Blob([csv], { type: 'text/csv' })); a.download = 'sleep-diary.csv'; a.click();
     };
     $('#bClr').onclick = () => { if (confirm('確定清除所有紀錄?')) { localStorage.removeItem(KEY_E); localStorage.removeItem(KEY_S); localStorage.removeItem(KEY_T); renderTimerBar(); viewData(); } };

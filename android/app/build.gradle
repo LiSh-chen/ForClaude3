@@ -1,4 +1,6 @@
 plugins { id 'com.android.application' }
+// 版本號隨 CI 執行次數遞增,更新時不會被判定為降版
+def runNumber = Integer.parseInt(System.getenv('GITHUB_RUN_NUMBER') ?: '1')
 android {
     namespace 'tw.sleepdiary'
     compileSdk 34
@@ -15,8 +17,7 @@ android {
         applicationId 'tw.sleepdiary'
         minSdk 24
         targetSdk 34
-        // 版本號隨 CI 執行次數遞增,更新時不會被判定為降版
-        versionCode (System.getenv('GITHUB_RUN_NUMBER') ?: '1').toInteger()
+        versionCode runNumber
         versionName '0.2'
     }
     buildTypes { release { minifyEnabled false } }

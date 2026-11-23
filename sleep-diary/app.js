@@ -130,7 +130,7 @@
   const INTRO = [
     ['⏱', '記錄', ['做事前按「開始」,結束再按「結束」', '自動畫到時鐘上', '☕🍺💊 按一下 = 記下現在']],
     ['🌙', '睡覺', ['🛏 躺上床 → 🌙 關燈睡覺', '手機螢幕朝下放床邊', '醒了翻成朝上,再睡翻回朝下', '起床:長按「起床」']],
-    ['🕐', '日記', ['先點上方圖示,再點圓上的起點、終點', '同一範圍再塗一次 = 取消', '點圓心或 ⭐ 記睡眠品質、備註', 'ⓘ 看自動算出的明細']],
+    ['🕐', '日記', ['先點圓上時段的「起點」,再點「終點」', '藍框框住的就是選到的範圍', '然後在跳出的選單選類別(各有顏色)', '點圓心或 ⭐ 記品質、備註;ⓘ 看明細']],
     ['📊', '一週', ['每天一條橫條,時間上下對齊', '左側圓點 = 睡眠品質(紅差 → 綠好)', '點任一天可編輯', 'ⓘ 看圖例']]
   ];
   function showIntro(n) {
@@ -218,10 +218,13 @@
   }
 
   // ---------- 日記(時鐘) ----------
+  // 類別:[代碼, 圖示, 名稱]。顏色:睡眠三態在 COL,其餘在 MCOL(一週圖共用)
   const BRUSHES = [['sleep', '😴', '睡著'], ['inbed', '🛏', '躺著醒著'], ['nap', '💤', '小睡'], ['caffeine', '☕', '咖啡因'], ['alcohol', '🍺', '酒'],
-    ['med', '💊', '助眠藥'], ['light', '☀', '照光'], ['exercise', '🏃', '運動'], ['ritual', '🧘', '睡前儀式'], ['screen', '📱', '睡前看螢幕'], ['meal', '🍽', '用餐'], ['alarm', '⏰', '鬧鐘'], ['erase', '⌫', '清除']];
+    ['med', '💊', '助眠藥'], ['light', '☀', '照光'], ['exercise', '🏃', '運動'], ['ritual', '🧘', '睡前儀式'], ['screen', '📱', '看螢幕'], ['meal', '🍽', '用餐'], ['alarm', '⏰', '鬧鐘'], ['erase', '⌫', '清除']];
   const ICON = { caffeine: '☕', alcohol: '🍺', med: '💊', light: '☀', exercise: '🏃', ritual: '🧘', screen: '📱', meal: '🍽', alarm: '⏰' };
-  const tl = { brush: null, anchor: null };
+  const tl = { anchor: null, sel: null };   // anchor = 已點的起點;sel = 已框選的範圍 {lo, hi}
+  const catColor = k => COL[k] || MCOL[k] || '#888';
+  const LIGHT_BG = ['inbed', 'nap', 'light'];
   const COL = { sleep: '#2f4a8a', inbed: '#f6c177', nap: '#9ecbf5' };
   const rad = d => d * Math.PI / 180;
   const pt = (r, d) => [200 + r * Math.sin(rad(d)), 200 - r * Math.cos(rad(d))];
@@ -231,50 +234,76 @@
     const [x0, y0] = pt(r1, a0), [x1, y1] = pt(r1, a1), [x2, y2] = pt(r0, a1), [x3, y3] = pt(r0, a0);
     return `M${f(x0)} ${f(y0)}A${r1} ${r1} 0 0 1 ${f(x1)} ${f(y1)}L${f(x2)} ${f(y2)}A${r0} ${r0} 0 0 0 ${f(x3)} ${f(y3)}Z`;
   }
+  const durTxt = n => { const m = n * 30; return m >= 60 ? `${Math.floor(m / 60)} 小時${m % 60 ? ' ' + m % 60 + ' 分' : ''}` : `${m} 分`; };
   /** 外圈 = 當天 0–24 時,內圈 = 前一晚 18–24 時;12 點鐘方向 = 0 時,順時針 */
   function drawClock(e) {
-    const slots = e.slots || {}, parts = [];
+    const slots = e.slots || {}, parts = [], over = [];
+    const lo = tl.sel ? tl.sel.lo : tl.anchor, hi = tl.sel ? tl.sel.hi : tl.anchor;
     for (let i = 0; i < 60; i++) {
       const inner = i < 12, a0 = inner ? 270 + i * 7.5 : (i - 12) * 7.5, a1 = a0 + 7.5;
       const [r0, r1] = inner ? [84, 124] : [128, 172];
-      const a = slots[i] || [], st = a.find(k => COL[k]) || '';
+      const a = slots[i] || [], st = a.find(k => COL[k]) || '', ms = a.filter(k => MCOL[k]);
       const h = ((inner ? 18 * 60 + i * 30 : (i - 12) * 30) / 60) % 24, night = h >= 22 || h < 7;
-      parts.push(`<path data-i="${i}" d="${sector(r0, r1, a0, a1)}" fill="${st ? COL[st] : night ? '#e6e9f4' : '#fdf6dc'}" stroke="${tl.anchor === i ? '#e03e3e' : '#fff'}" stroke-width="${tl.anchor === i ? 3 : 1}"/>`);
-      const marks = a.filter(k => ICON[k]);
-      if (marks.length) { const [x, y] = pt((r0 + r1) / 2, a0 + 3.75); parts.push(`<text x="${f(x)}" y="${f(y)}" font-size="${marks.length > 1 ? 8 : 12}" text-anchor="middle" dominant-baseline="central" pointer-events="none">${marks.map(k => ICON[k]).join('')}</text>`); }
+      parts.push(`<path data-i="${i}" d="${sector(r0, r1, a0, a1)}" fill="${st ? COL[st] : night ? '#e6e9f4' : '#fdf6dc'}" stroke="#fff" stroke-width="1"/>`);
+      if (ms.length) {   // 其他活動:專屬顏色色塊(有睡眠狀態時佔外側 45%,否則佔滿)
+        const rm = st ? r0 + (r1 - r0) * 0.55 : r0, th = (r1 - rm) / ms.length;
+        ms.forEach((k, n) => parts.push(`<path data-i="${i}" d="${sector(rm + n * th, rm + (n + 1) * th, a0, a1)}" fill="${MCOL[k]}" stroke="#fff" stroke-width=".8"/>`));
+        if (ms.length === 1 && !st) { const [x, y] = pt((r0 + r1) / 2, a0 + 3.75); parts.push(`<text x="${f(x)}" y="${f(y)}" font-size="11" text-anchor="middle" dominant-baseline="central" pointer-events="none">${ICON[ms[0]]}</text>`); }
+      }
+      if (lo != null && i >= lo && i <= hi) over.push(`<path data-i="${i}" d="${sector(r0 - 2, r1 + 2, a0, a1)}" fill="rgba(25,118,210,.30)" stroke="#1565c0" stroke-width="${tl.sel ? 2.5 : 4}"/>`);
     }
-    for (let h = 0; h < 24; h += 3) {
-      const [x, y] = pt(187, h * 15), [x1, y1] = pt(174, h * 15), [x2, y2] = pt(178, h * 15);
-      parts.push(`<line x1="${f(x1)}" y1="${f(y1)}" x2="${f(x2)}" y2="${f(y2)}" stroke="#888"/><text x="${f(x)}" y="${f(y)}" font-size="12" fill="#555" text-anchor="middle" dominant-baseline="central" pointer-events="none">${h}</text>`);
+    parts.push(...over);
+    for (let h = 0; h < 24; h++) {   // 每小時刻度,每 3 小時標數字
+      const [x1, y1] = pt(173, h * 15), [x2, y2] = pt(h % 3 ? 177 : 181, h * 15);
+      parts.push(`<line x1="${f(x1)}" y1="${f(y1)}" x2="${f(x2)}" y2="${f(y2)}" stroke="${h % 3 ? '#bbb' : '#777'}"/>`);
+      if (h % 3 === 0) { const [x, y] = pt(191, h * 15); parts.push(`<text x="${f(x)}" y="${f(y)}" font-size="12" fill="#555" text-anchor="middle" dominant-baseline="central" pointer-events="none">${h}</text>`); }
     }
     const [lx, ly] = pt(104, 315);
     parts.push(`<text x="${f(lx)}" y="${f(ly)}" font-size="9" fill="#667" text-anchor="middle" pointer-events="none" transform="rotate(-45 ${f(lx)} ${f(ly)})">前一晚</text>`);
     parts.push('<circle data-c="1" cx="200" cy="200" r="80" fill="#fff" stroke="#e3e7f1"/>');
     const d = TL.derive(slots), sleepN = Object.keys(slots).filter(k => +k < 36 && slots[k].includes('sleep')).length, mins = sleepN * 30, c = [];
-    if (tl.anchor != null) c.push(`<tspan x="200" dy="0" font-size="22" fill="#e03e3e" font-weight="700">點終點</tspan>`);
-    else if (sleepN) {
+    let y0 = 190;
+    if (tl.sel) {
+      c.push(`<tspan x="200" dy="0" font-size="22" font-weight="700" fill="#1565c0">${TL.slotStart(lo)}</tspan><tspan x="200" dy="24" font-size="22" font-weight="700" fill="#1565c0">→ ${TL.slotEnd(hi)}</tspan><tspan x="200" dy="22" font-size="13" fill="#555">${durTxt(hi - lo + 1)}</tspan>`); y0 = 178;
+    } else if (tl.anchor != null) {
+      c.push(`<tspan x="200" dy="0" font-size="13" fill="#555">起點</tspan><tspan x="200" dy="28" font-size="26" font-weight="700" fill="#1565c0">${TL.slotStart(tl.anchor)}</tspan><tspan x="200" dy="22" font-size="13" fill="#555">再點終點</tspan>`); y0 = 175;
+    } else if (sleepN) {
       c.push(`<tspan x="200" dy="0" font-size="22" font-weight="700" fill="#2f4a8a">😴 ${Math.floor(mins / 60)}h${mins % 60 ? pad(mins % 60) : ''}</tspan>`);
       if (d && d.bedTime) c.push(`<tspan x="200" dy="22" font-size="13" fill="#555">${d.bedTime} → ${d.getUp}</tspan>`);
       c.push(`<tspan x="200" dy="26" font-size="20">${e.quality ? FACE[e.quality - 1] : '⭐'}</tspan>`);
-    } else c.push(`<tspan x="200" dy="0" font-size="26">${tl.brush ? (BRUSHES.find(b => b[0] === tl.brush) || [])[1] : '👆'}</tspan>`);
-    parts.push(`<text x="200" y="${sleepN && tl.anchor == null ? 190 : 205}" text-anchor="middle" pointer-events="none">${c.join('')}</text>`);
+    } else c.push(`<tspan x="200" dy="0" font-size="26">👆</tspan><tspan x="200" dy="24" font-size="13" fill="#888">點時段開始</tspan>`);
+    parts.push(`<text x="200" y="${y0}" text-anchor="middle" pointer-events="none">${c.join('')}</text>`);
     $('#grid').innerHTML = `<svg class="clock" viewBox="0 0 400 400">${parts.join('')}</svg>`;
-    const bi = BRUSHES.find(b => b[0] === tl.brush), stl = $('#tlstat'), mini = $('#mini');
-    if (stl) stl.textContent = !bi ? '👆 先選上方一個活動,再點圓上的時段' : `${bi[1]} ${bi[2]} · ${tl.anchor == null ? '點起點' : '點終點'}`;
+    const stl = $('#tlstat'), mini = $('#mini');
+    if (stl) stl.innerHTML = tl.sel ? `已選 <b>${TL.slotStart(lo)} – ${TL.slotEnd(hi)}</b>(${durTxt(hi - lo + 1)})` : tl.anchor != null ? `起點 <b>${TL.slotStart(tl.anchor)}</b> · 再點終點` : '👆 點一個時段當起點,再點終點';
     if (mini) mini.innerHTML = [['🛏 上床', d && d.bedTime || '—'], ['🌅 起床', d && d.getUp || '—'], ['👀 中途醒', d && d.awakenings !== '' && d.awakenings !== undefined ? d.awakenings + ' 次' : '—']].map(([l, v]) => `<div class="mc"><small>${l}</small><b>${v}</b></div>`).join('');
   }
 
   function tapSlot(i) {
-    if (!tl.brush) { toast('先選上方圖示'); return; }
     if (tl.anchor == null) { tl.anchor = i; drawClock(entries()[state.date] || {}); return; }
-    const all = entries(), cur = all[state.date] || { date: state.date };
-    cur.slots = TL.paint(cur.slots || {}, tl.brush, tl.anchor, i);
-    tl.anchor = null;
-    const d = TL.derive(cur.slots);
-    if (d) { Object.assign(cur, d); cur._auto = []; }
-    all[state.date] = cur; save(KEY_E, all);
-    drawClock(cur);
-    if (['alcohol', 'caffeine', 'med', 'ritual'].includes(tl.brush) && cur.slots && Object.values(cur.slots).some(a => a.includes(tl.brush))) openSheet(tl.brush === 'ritual' ? 'ritualNote' : tl.brush);
+    tl.sel = { lo: Math.min(tl.anchor, i), hi: Math.max(tl.anchor, i) }; tl.anchor = null;
+    drawClock(entries()[state.date] || {}); openCategory();
+  }
+
+  /** 框選範圍後,跳出類別選單;已全部套用的類別打勾,再點一次就取消 */
+  function openCategory() {
+    const { lo, hi } = tl.sel, e = entries()[state.date] || {}, slots = e.slots || {};
+    const has = k => { for (let i = lo; i <= hi; i++) if (!(slots[i] || []).includes(k)) return false; return true; };
+    const { sh, close } = popup(`<div style="display:flex;justify-content:space-between;align-items:baseline;margin-bottom:10px"><b style="font-size:20px;color:#1565c0">${TL.slotStart(lo)} → ${TL.slotEnd(hi)}</b><span class="hint">${durTxt(hi - lo + 1)} · 選類別</span></div>
+      <div class="cat">${BRUSHES.map(([k, ic, t]) => { const c = catColor(k), on = k !== 'erase' && has(k), ink = on && !LIGHT_BG.includes(k) ? '#fff' : '#1b2437';
+        return `<button data-k="${k}" style="border-color:${c};background:${on ? c : c + '22'};color:${ink}"><span>${ic}</span>${t}${on ? '<small>✓ 再點取消</small>' : ''}</button>`; }).join('')}</div>
+      <button class="btn alt" id="catCancel">取消</button>`);
+    popup.onClose = () => { tl.sel = null; tl.anchor = null; if (state.tab === 'diary') drawClock(entries()[state.date] || {}); };
+    $('#catCancel').onclick = close;
+    sh.querySelectorAll('[data-k]').forEach(b => b.onclick = () => {
+      const k = b.dataset.k, all = entries(), cur = all[state.date] || { date: state.date };
+      cur.slots = TL.paint(cur.slots || {}, k, lo, hi);
+      const dv = TL.derive(cur.slots); if (dv) { Object.assign(cur, dv); cur._auto = []; }
+      all[state.date] = cur; save(KEY_E, all);
+      const added = k !== 'erase' && Object.keys(cur.slots).some(i => +i >= lo && +i <= hi && cur.slots[i].includes(k));
+      close(); toast(`${b.textContent.replace('✓ 再點取消', '')} ${added ? '✓' : '已取消'}`);
+      if (added && ['alcohol', 'caffeine', 'med', 'ritual'].includes(k)) openSheet(k === 'ritual' ? 'ritualNote' : k);
+    });
   }
 
   const patch = (k, v, date) => { date = date || state.date; const all = entries(), cur = all[date] || { date }; cur[k] = v; all[date] = cur; save(KEY_E, all); };
@@ -316,29 +345,26 @@
       ['☕ 最後咖啡因', d.caffeineLast ? d.caffeineLast + (e.caffeine ? ' ' + e.caffeine : '') : ''], ['🍺 最後飲酒', d.alcoholLast ? d.alcoholLast + (e.alcohol ? ' ' + e.alcohol : '') : ''],
       ['💊 服藥', d.medTime ? d.medTime + (e.med ? ' ' + e.med : '') : ''], ['☀ 照光', d.light], ['🏃 運動', d.exercise],
       ['🧘 睡前儀式', [d.ritual, e.ritualNote].filter(Boolean).join(' ')], ['📱 看螢幕', d.screen], ['🍽 用餐', d.meal], ['⏰ 鬧鐘', d.alarm], ['📝 備註', e.note || '']].filter(r => r[1]) : [];
-    const { close } = popup(`<h2>${state.date.slice(5).replace('-', '/')} ${wdOf(state.date).slice(2)} · ${e.dayType || defType(state.date)}</h2>${rows.length ? `<div class="kv">${rows.map(r => `<span>${r[0]}</span><b>${r[1]}</b>`).join('')}</div>` : '<p class="hint">尚無紀錄</p>'}<button class="btn" id="shDone">完成</button>`);
+    const { close } = popup(`<h2>${state.date.slice(5).replace('-', '/')} ${wdOf(state.date).slice(2)} · ${e.dayType || defType(state.date)}</h2>${rows.length ? `<div class="kv">${rows.map(r => `<span>${r[0]}</span><b>${r[1]}</b>`).join('')}</div>` : '<p class="hint">尚無紀錄</p>'}<div class="lg" style="margin-top:12px">${BRUSHES.filter(b => b[0] !== 'erase').map(b => `<span><i style="background:${catColor(b[0])}"></i>${b[1]} ${b[2]}</span>`).join('')}</div><button class="btn" id="shDone">完成</button>`);
     $('#shDone').onclick = close;
   }
 
   function viewDiary() {
     const e = entries()[state.date] || { date: state.date };
-    tl.anchor = null;
+    tl.anchor = null; tl.sel = null;
+    const dtxt = s => { const [y, m, dd] = s.split('-'); return `${+y !== new Date().getFullYear() ? y + '/' : ''}${m}/${dd} ${wdOf(s).slice(2) ? '週' + wdOf(s).slice(2) : ''}`; };
     $('#app').innerHTML = `
       <div class="bar">
-        <button class="ib" id="dPrev">◀</button><input type="date" id="dDate" value="${state.date}"><button class="ib" id="dNext">▶</button>
+        <button class="ib" id="dPrev">◀</button>
+        <label class="dt"><span>${dtxt(state.date)}</span><input type="date" id="dDate" value="${state.date}"></label>
+        <button class="ib" id="dNext">▶</button>
         <button class="ib t" id="bType">${e.dayType || defType(state.date)}</button><button class="ib" id="bStar">⭐</button><button class="ib" id="bInfo">ⓘ</button>
       </div>
-      <div class="brush">${BRUSHES.map(([k, ic, t]) => `<button type="button" data-b="${k}" title="${t}">${ic}</button>`).join('')}</div>
       <div class="stl" id="tlstat"></div>
       <div id="grid"></div>
       <div class="g3 mini" id="mini"></div>`;
     if (!e.dayType) patch('dayType', defType(state.date));
     drawClock(e);
-    document.querySelectorAll('[data-b]').forEach(b => { b.classList.toggle('on', b.dataset.b === tl.brush); b.onclick = () => {
-      tl.brush = b.dataset.b; tl.anchor = null;
-      document.querySelectorAll('[data-b]').forEach(x => x.classList.toggle('on', x === b));
-      toast(b.textContent + ' ' + b.title); drawClock(entries()[state.date] || {});
-    }; });
     $('#grid').onclick = ev => { if (ev.target.closest('[data-c]')) return openSheet(); const c = ev.target.closest('[data-i]'); if (c) tapSlot(+c.dataset.i); };
     $('#bStar').onclick = () => openSheet();
     $('#bInfo').onclick = openInfo;

@@ -26,7 +26,9 @@
   .g3 { display:grid; grid-template-columns:repeat(3,1fr); gap:8px; margin-bottom:8px; }
   .sec { display:flex; justify-content:space-between; align-items:baseline; font-size:14px; font-weight:600; margin:2px 2px 0; } .sec small { font-weight:400; color:var(--sub); font-size:12px; }
   .tb small { font-size:11px; color:var(--sub); } .tb.run small { color:#f3d0d0; } .big small { display:block; font-size:12px; font-weight:400; color:#aab; margin-top:4px; }
-  .stl { text-align:center; font-size:14px; color:var(--sub); margin:0 0 4px; min-height:20px; }
+  .stl { text-align:center; font-size:15px; color:var(--sub); margin:0 0 2px; min-height:22px; } .stl b { color:#1565c0; font-size:17px; }
+  .dt { flex:1; min-width:0; position:relative; height:38px; border:1px solid var(--line); border-radius:10px; background:#fff; display:flex; align-items:center; justify-content:center; font-weight:700; font-size:16px; white-space:nowrap; } .dt input { position:absolute; inset:0; width:100%; height:100%; opacity:0; padding:0; }
+  .cat { display:grid; grid-template-columns:repeat(5,1fr); gap:6px; } .cat button { border:2px solid; border-radius:12px; padding:6px 0 4px; font-size:12px; font-weight:600; display:flex; flex-direction:column; align-items:center; gap:1px; min-height:62px; justify-content:center; } .cat button span { font-size:23px; line-height:1.1; } .cat button small { font-size:9px; font-weight:400; }
   .mini { margin:8px 0 0; } .mc { background:#fff; border:1px solid var(--line); border-radius:12px; padding:7px 2px; text-align:center; } .mc small { display:block; font-size:12px; color:var(--sub); } .mc b { font-size:17px; }
   .leg { display:flex; justify-content:center; flex-wrap:wrap; gap:4px 12px; font-size:12px; color:var(--sub); margin-top:8px; } .leg i { display:inline-block; width:10px; height:10px; border-radius:3px; margin-right:4px; vertical-align:-1px; }
   .srow { background:#fff; border:1px solid var(--line); border-radius:14px; padding:10px; margin-bottom:10px; } .srow .btn { margin-top:0; } .srow p { margin:6px 2px 0; font-size:13px; color:var(--sub); }
@@ -44,7 +46,7 @@
   .brush { display:grid; grid-template-columns:repeat(7,1fr); gap:5px; margin-bottom:6px; }
   .brush button { border:2px solid var(--line); background:#fff; border-radius:10px; height:40px; font-size:20px; padding:0; }
   .brush button.on { border-color:var(--pri); background:#e8ecf7; }
-  .clock { width:min(100%,46vh); display:block; margin:0 auto; touch-action:manipulation; }
+  .clock { width:min(100%,52vh); display:block; margin:0 auto; touch-action:manipulation; }
   .wk { width:100%; max-height:44vh; display:block; }
   .stats { display:flex; justify-content:space-around; background:#fff; border-radius:12px; padding:8px 2px; margin-top:8px; font-size:15px; font-weight:600; text-align:center; } .stats small { display:block; font-size:11px; font-weight:400; color:var(--sub); }
   .stars { display:flex; gap:6px; } .stars button { flex:1; padding:6px 0; border:2px solid var(--line); border-radius:10px; background:#fff; font-size:22px; line-height:1.2; }
@@ -63,7 +65,7 @@
   #timerbar { position:fixed; left:0; right:0; bottom:52px; z-index:6; display:none; background:#14213d; color:#fff; font-size:14px; }
   #timerbar .tbr { display:flex; justify-content:space-between; align-items:center; padding:7px 12px; border-top:1px solid #2c3a5e; }
   #timerbar button { background:#e03e3e; color:#fff; border:0; border-radius:8px; padding:6px 16px; font-size:14px; font-weight:600; }
-  #toast { position:fixed; left:50%; transform:translateX(-50%); bottom:120px; background:#000c; color:#fff; padding:9px 16px; border-radius:99px; z-index:30; font-size:14px; opacity:0; transition:opacity .2s; pointer-events:none; max-width:90%; text-align:center; }
+  #toast { position:fixed; left:50%; transform:translateX(-50%); top:48px; background:#000c; color:#fff; padding:9px 16px; border-radius:99px; z-index:30; font-size:14px; opacity:0; transition:opacity .2s; pointer-events:none; max-width:90%; text-align:center; }
   #toast.show { opacity:1; }
   /* 夜間模式:純黑 */
   #night { position:fixed; inset:0; background:#000; color:#333; z-index:20; display:none; flex-direction:column; justify-content:space-between; align-items:center; padding:28px 18px; text-align:center; }

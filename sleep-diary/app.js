@@ -31,15 +31,30 @@
   ];
 
   // ---------- 感測器 ----------
-  const motion = { z: null, ok: false, det: null, listening: false };
+  const motion = { z: null, ok: false, det: null, listening: false, flatSince: null };
   function onMotion(e) {
     const g = e.accelerationIncludingGravity;
     if (!g || g.z == null) return;
-    motion.z = g.z; motion.ok = true;
+    const firstReading = !motion.ok; motion.z = g.z; motion.ok = true;
+    if (firstReading && $('#night').classList.contains('show')) renderNight();   // 感測器剛有資料:更新狀態文字
+    if (!$('#night').classList.contains('show')) { motion.flatSince = null; return; }
     if (motion.det) {
       const ev = motion.det.feed(Date.now(), g.z);
       if (ev) recordEvent(ev.type, ev.t);
-    }
+    } else if (Math.abs(g.z) >= 6.5) {                       // 尚未就緒:手機放平穩定 2 秒後才建立偵測器
+      const now = Date.now(); motion.flatSince = motion.flatSince || now;
+      if (now - motion.flatSince >= 2000) armDetector(Math.sign(g.z));
+    } else motion.flatSince = null;
+  }
+  /** 以目前放平的朝向當作基準(睡覺中);續記時沿用先前存的基準 */
+  function armDetector(sign) {
+    const s = session(); if (!s) return;
+    s.restSign = s.restSign || sign; save(KEY_S, s);
+    motion.det = new FlipDetector({ restSign: s.restSign });
+    const last = s.events[s.events.length - 1]; if (last && last.type === 'awake') motion.det.state = 'awake';
+    motion.flatSince = null;
+    if (navigator.vibrate) navigator.vibrate(60);
+    renderNight();
   }
   async function enableSensor() {
     if (!motion.listening) { window.addEventListener('devicemotion', onMotion); motion.listening = true; }
@@ -58,29 +73,48 @@
   // ---------- 夜間流程 ----------
   function recordEvent(type, t) {
     const s = session(); if (!s || !s.tryAt) return;
+    const last = s.events[s.events.length - 1];
+    if ((last ? last.type : 'rest') === type) return;         // 重複的狀態不記
     s.events.push({ type, t }); save(KEY_S, s);
     if (navigator.vibrate) navigator.vibrate(type === 'awake' ? [40, 60, 40] : 40);
     renderNight();
   }
   function startNight() {
     const s = session() || { events: [] };
-    s.tryAt = Date.now(); s.bedAt = s.bedAt || s.tryAt; s.events = []; s.outAt = null;
+    s.tryAt = Date.now(); s.bedAt = s.bedAt || s.tryAt; s.events = []; s.outAt = null; s.restSign = null;
     save(KEY_S, s);
-    motion.det = null;
-    if (motion.ok && Math.abs(motion.z) >= 6.5) motion.det = new FlipDetector({ restSign: Math.sign(motion.z) });
+    motion.det = null; motion.flatSince = null;
     $('#night').classList.add('show'); lockScreen(); renderNight();
+  }
+  /** App 重開或回到前景時,若有未結束的睡眠記錄就回到夜間畫面(18 小時內) */
+  function resumeNight() {
+    const s = session(); if (!s || !s.tryAt || s.outAt || Date.now() - s.tryAt > 18 * 3600e3) return false;
+    if ($('#night').classList.contains('show')) return true;
+    motion.det = null; motion.flatSince = null;
+    $('#night').classList.add('show'); lockScreen(); renderNight(); return true;
   }
   function renderNight() {
     const s = session(); if (!s) return;
     const awake = (() => { const l = s.events[s.events.length - 1]; return l && l.type === 'awake'; })();
+    const n = s.events.filter(x => x.type === 'awake').length;
+    const stat = motion.det ? '✓ 翻面偵測就緒' : motion.ok ? '⏳ 請把手機放平,約 2 秒後就緒' : '⚠ 未偵測到感測器 · 請用下方按鈕';
     $('#night').innerHTML = `
-      <div class="st"><b>${awake ? '👀 醒著' : '😴 睡眠中'}</b>${motion.det ? '↕ 翻面偵測中' : '手動模式'}</div>
+      <div class="st"><b>${awake ? '👀 醒著' : '😴 睡眠中'}</b>${stat}<br>已記錄醒來 ${n} 次</div>
       <div class="ctl">
         <button id="nAwake">${awake ? '我再睡了' : '我醒了'}</button>
-        <button id="nUp">☀ 起床(長按)</button>
+        <button id="nUp">☀ 起床</button>
       </div>`;
     $('#nAwake').onclick = () => recordEvent(awake ? 'rest' : 'awake', Date.now());
-    holdButton($('#nUp'), endNight);
+    $('#nUp').onclick = () => {
+      if (!confirm('確定起床?\n會結束今晚的睡眠記錄並產生日記')) return;
+      const x = session(), l = x.events[x.events.length - 1];
+      // 最後一次翻面是「醒了」卻沒翻回來,且離現在超過 1 小時:問是不是真的醒來起床,還是半夜醒來後又睡著(忘了翻回)
+      if (l && l.type === 'awake' && Date.now() - l.t > 60 * 60000 &&
+          !confirm(`最後一次翻面是 ${hm(l.t)}。\n這是你「醒來起床」的時間嗎?\n\n[確定] 是,那時就醒了\n[取消] 不是,只是半夜醒來,後來又睡著了(約算 15 分鐘)`)) {
+        x.events.push({ type: 'rest', t: l.t + 15 * 60000 }); save(KEY_S, x);
+      }
+      endNight();
+    };
   }
   function holdButton(btn, fn) {
     let timer; const stop = () => clearTimeout(timer);
@@ -129,7 +163,7 @@
   const KEY_I = 'sleepdiary.intro';
   const INTRO = [
     ['⏱', '記錄', ['做事前按「開始」,結束再按「結束」', '自動畫到時鐘上', '☕🍺💊 按一下 = 記下現在']],
-    ['🌙', '睡覺', ['🛏 躺上床 → 🌙 關燈睡覺', '手機螢幕朝下放床邊', '醒了翻成朝上,再睡翻回朝下', '起床:長按「起床」']],
+    ['🌙', '睡覺', ['🛏 躺上床 → 🌙 關燈睡覺', '手機充電、螢幕朝下放床邊(約 2 秒後就緒)', '⚠ 請保持螢幕亮著,不要按電源鍵鎖屏', '醒了翻成朝上,再睡翻回朝下', '早上按「起床」結束並產生日記']],
     ['🕐', '日記', ['先點圓上時段的「起點」,再點「終點」', '藍框框住的就是選到的範圍', '然後在跳出的選單選類別(各有顏色)', '點圓心或 ⭐ 記品質、備註;ⓘ 看明細']],
     ['📊', '一週', ['每天一條橫條,時間上下對齊', '左側圓點 = 睡眠品質(紅差 → 綠好)', '點任一天可編輯', 'ⓘ 看圖例']]
   ];
@@ -203,10 +237,10 @@
         : `<button class="tb" data-t="${k}"><span class="i">${ic}</span>${t}<small>開始</small></button>`).join('')}</div>
       <div class="sec">⚡ 單次事件 <small>記下「現在」</small></div>
       <div class="g3 e">${EVENTS.map(([k, ic, t]) => `<button class="tb ev" data-ev="${k}"><span class="i" style="font-size:22px">${ic}</span>${t}</button>`).join('')}</div>
-      <div class="sec">🌙 睡眠 <small>手機螢幕朝下放床邊</small></div>
+      <div class="sec">🌙 睡眠 <small>充電 · 螢幕朝下放床邊</small></div>
       <div class="nightrow">
         <button class="tb" id="bBed"><span class="i">🛏</span>躺上床<small>${s && s.bedAt ? '已記 ' + hm(s.bedAt) : '記下上床時間'}</small></button>
-        <button class="big" id="bTry">${inNight ? '🌙 回夜間畫面' : '🌙 關燈睡覺'}<small>${inNight ? '睡眠記錄進行中' : '翻面偵測 · 自動記錄醒來'}</small></button>
+        <button class="big" id="bTry">${inNight ? '🌙 回夜間畫面' : '🌙 關燈睡覺'}<small>${inNight ? '睡眠記錄進行中' : motion.ok ? '📡 感測器正常 · 請保持亮屏' : '⚠ 未偵測到感測器'}</small></button>
       </div></div>`;
     document.querySelectorAll('[data-t]').forEach(b => b.onclick = () => (timers()[b.dataset.t] ? endTimer : startTimer)(b.dataset.t));
     document.querySelectorAll('[data-ev]').forEach(b => b.onclick = () => recordEvent2(b.dataset.ev));
@@ -449,7 +483,10 @@
 
   document.querySelectorAll('nav button').forEach(b => b.onclick = () => go(b.dataset.tab));
   renderTimerBar();
+  enableSensor();                                            // Android 無需授權,先開始監聽以便顯示狀態
   go('night');
-  if (!localStorage.getItem(KEY_I)) showIntro(0);
+  if (!resumeNight() && !localStorage.getItem(KEY_I)) showIntro(0);
+  document.addEventListener('visibilitychange', () => { if (document.visibilityState === 'visible') resumeNight(); });
+  setTimeout(() => { if (state.tab === 'night' && !$('#night').classList.contains('show')) viewNight(); }, 800);
   window.__sleepdiary = { recordEvent, startNight, endNight, state };
 })();

@@ -17,6 +17,11 @@ jobs:
         with: { gradle-version: '8.9' }
       - name: Test flip logic
         run: node sleep-diary/test/flip.test.js && node sleep-diary/test/timeline.test.js
+      - name: Test native flip logic (pure Java)
+        run: |
+          mkdir -p /tmp/fl
+          javac -d /tmp/fl android/app/src/main/java/tw/sleepdiary/FlipLogic.java android/app/src/test/java/tw/sleepdiary/FlipLogicTest.java
+          java -cp /tmp/fl tw.sleepdiary.FlipLogicTest
       - name: Build debug APK
         working-directory: android
         run: gradle --no-daemon assembleDebug

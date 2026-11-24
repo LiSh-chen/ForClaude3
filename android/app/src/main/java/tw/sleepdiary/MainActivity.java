@@ -4,6 +4,8 @@ import android.app.Activity;
 import android.content.ContentValues;
 import android.content.Context;
 import android.content.Intent;
+import android.content.pm.PackageManager;
+import android.provider.Settings;
 import android.net.Uri;
 import android.os.Build;
 import android.os.Environment;
@@ -19,17 +21,15 @@ import android.webkit.WebResourceResponse;
 import android.webkit.WebSettings;
 import android.webkit.WebView;
 import android.webkit.WebViewClient;
-import android.view.WindowManager;
 import androidx.webkit.WebViewAssetLoader;
 
 /** 以 WebView 載入打包在 assets/www 的網頁版。https://appassets.androidplatform.net 為安全來源,
- *  感測器與 localStorage 皆可用;螢幕在 App 前景時保持開啟(夜間模式純黑)。 */
+ *  感測器與 localStorage 皆可用;夜間翻面偵測由前景服務 SleepService 在背景執行,螢幕可以關閉。 */
 public class MainActivity extends Activity {
     private WebView web;
 
     @Override protected void onCreate(Bundle b) {
         super.onCreate(b);
-        getWindow().addFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON);
         final WebViewAssetLoader loader = new WebViewAssetLoader.Builder()
             .addPathHandler("/assets/", new WebViewAssetLoader.AssetsPathHandler(this))
             .build();
@@ -72,6 +72,33 @@ public class MainActivity extends Activity {
             runOnUiThread(() -> {
                 PrintManager pm = (PrintManager) getSystemService(Context.PRINT_SERVICE);
                 pm.print("睡眠日記", web.createPrintDocumentAdapter("睡眠日記"), new PrintAttributes.Builder().build());
+            });
+        }
+        // ---- 夜間背景偵測(前景服務) ----
+        @JavascriptInterface public void startNight(final long tryAt, final String events, final int restSign) {
+            SleepStore.begin(MainActivity.this, tryAt, events, restSign);   // 同步寫入狀態,網頁立刻讀得到「進行中」
+            runOnUiThread(() -> {
+                if (Build.VERSION.SDK_INT >= 33 && checkSelfPermission(android.Manifest.permission.POST_NOTIFICATIONS) != PackageManager.PERMISSION_GRANTED)
+                    requestPermissions(new String[]{android.Manifest.permission.POST_NOTIFICATIONS}, 1);
+                Intent i = new Intent(MainActivity.this, SleepService.class).setAction("start");
+                if (Build.VERSION.SDK_INT >= 26) startForegroundService(i); else startService(i);
+            });
+        }
+        @JavascriptInterface public String stopNight() {
+            String st = SleepStore.state(MainActivity.this, SleepService.instance != null);
+            SleepStore.end(MainActivity.this);
+            stopService(new Intent(MainActivity.this, SleepService.class));
+            return st;
+        }
+        @JavascriptInterface public void addEvent(String type, long t) {
+            SleepService s = SleepService.instance;
+            if (s != null) s.manual(type, t); else SleepStore.append(MainActivity.this, type, t);
+        }
+        @JavascriptInterface public String getState() { return SleepStore.state(MainActivity.this, SleepService.instance != null); }
+        @JavascriptInterface public void batterySettings() {
+            runOnUiThread(() -> {
+                try { startActivity(new Intent(Settings.ACTION_IGNORE_BATTERY_OPTIMIZATION_SETTINGS)); }
+                catch (Exception e) { startActivity(new Intent(Settings.ACTION_SETTINGS)); }
             });
         }
         private void toast(String s) { runOnUiThread(() -> Toast.makeText(MainActivity.this, s, Toast.LENGTH_LONG).show()); }

@@ -30,12 +30,26 @@
     ['light', '照光(時段)'], ['exercise', '運動(時段)'], ['ritual', '睡前儀式(時段)'], ['ritualNote', '睡前儀式內容'], ['screen', '睡前看螢幕(時段)'], ['meal', '用餐(時段)']
   ];
 
-  // ---------- 感測器 ----------
+  // ---------- 原生背景偵測(APK 的前景服務;螢幕關閉也能整夜記錄翻面)----------
+  const NB = (window.AndroidBridge && typeof window.AndroidBridge.getState === 'function') ? window.AndroidBridge : null;
+  const nativeState = () => { try { return JSON.parse(NB.getState()); } catch (e) { return null; } };
+  /** 把服務記到的事件同步進目前的睡眠記錄,並更新夜間畫面 */
+  function syncNative() {
+    if (!NB) return;
+    const st = nativeState(), s = session(); if (!st || !s || !s.tryAt || s.outAt) return;
+    s.events = st.events || []; s.restSign = st.restSign || s.restSign; s.nArmed = !!st.armed; s.nAlive = !!st.alive; s.nRunning = !!st.running;
+    save(KEY_S, s);
+    if ($('#night').classList.contains('show')) renderNight();
+  }
+  setInterval(() => { if (NB && $('#night').classList.contains('show')) syncNative(); }, 3000);
+
+  // ---------- 感測器(瀏覽器版;APK 內由原生服務處理)----------
   const motion = { z: null, ok: false, det: null, listening: false, flatSince: null };
   function onMotion(e) {
     const g = e.accelerationIncludingGravity;
     if (!g || g.z == null) return;
     const firstReading = !motion.ok; motion.z = g.z; motion.ok = true;
+    if (NB) return;                                           // APK:翻面偵測交給原生前景服務
     if (firstReading && $('#night').classList.contains('show')) renderNight();   // 感測器剛有資料:更新狀態文字
     if (!$('#night').classList.contains('show')) { motion.flatSince = null; return; }
     if (motion.det) {
@@ -68,11 +82,12 @@
   }
   let wakeLock = null;
   async function lockScreen() { try { wakeLock = await navigator.wakeLock.request('screen'); } catch (e) { wakeLock = null; } }
-  document.addEventListener('visibilitychange', () => { if (document.visibilityState === 'visible' && $('#night').classList.contains('show')) lockScreen(); });
+  document.addEventListener('visibilitychange', () => { if (document.visibilityState === 'visible' && $('#night').classList.contains('show')) { if (NB) syncNative(); else lockScreen(); } });
 
   // ---------- 夜間流程 ----------
   function recordEvent(type, t) {
     const s = session(); if (!s || !s.tryAt) return;
+    if (NB) { NB.addEvent(type, t); syncNative(); return; }   // 手動標記也交給服務,保持單一事實來源
     const last = s.events[s.events.length - 1];
     if ((last ? last.type : 'rest') === type) return;         // 重複的狀態不記
     s.events.push({ type, t }); save(KEY_S, s);
@@ -84,20 +99,29 @@
     s.tryAt = Date.now(); s.bedAt = s.bedAt || s.tryAt; s.events = []; s.outAt = null; s.restSign = null;
     save(KEY_S, s);
     motion.det = null; motion.flatSince = null;
-    $('#night').classList.add('show'); lockScreen(); renderNight();
+    if (NB) { NB.startNight(s.tryAt, '[]', 0); s.nRunning = true; s.nAlive = true; save(KEY_S, s); }   // 啟動前景服務(先顯示啟動中,避免閃現警告)
+    $('#night').classList.add('show'); if (!NB) lockScreen(); renderNight(); if (NB) setTimeout(syncNative, 600);
   }
   /** App 重開或回到前景時,若有未結束的睡眠記錄就回到夜間畫面(18 小時內) */
   function resumeNight() {
     const s = session(); if (!s || !s.tryAt || s.outAt || Date.now() - s.tryAt > 18 * 3600e3) return false;
     if ($('#night').classList.contains('show')) return true;
     motion.det = null; motion.flatSince = null;
-    $('#night').classList.add('show'); lockScreen(); renderNight(); return true;
+    $('#night').classList.add('show'); if (!NB) lockScreen(); renderNight();
+    if (NB) {                                                  // 服務被系統回收時,用已存的事件重新啟動
+      const st = nativeState();
+      if (!st || !st.running || !st.alive) NB.startNight(s.tryAt, JSON.stringify(s.events), s.restSign || 0);
+      setTimeout(syncNative, 600);
+    }
+    return true;
   }
   function renderNight() {
     const s = session(); if (!s) return;
     const awake = (() => { const l = s.events[s.events.length - 1]; return l && l.type === 'awake'; })();
     const n = s.events.filter(x => x.type === 'awake').length;
-    const stat = motion.det ? '✓ 翻面偵測就緒' : motion.ok ? '⏳ 請把手機放平,約 2 秒後就緒' : '⚠ 未偵測到感測器 · 請用下方按鈕';
+    const stat = NB
+      ? (s.nArmed ? '✓ 背景偵測就緒 · 可以鎖屏' : s.nRunning ? '⏳ 請把手機放平,約 2 秒後就緒' : '⚠ 背景偵測未運作 · 請用下方按鈕')
+      : (motion.det ? '✓ 翻面偵測就緒' : motion.ok ? '⏳ 請把手機放平,約 2 秒後就緒' : '⚠ 未偵測到感測器 · 請用下方按鈕');
     $('#night').innerHTML = `
       <div class="st"><b>${awake ? '👀 醒著' : '😴 睡眠中'}</b>${stat}<br>已記錄醒來 ${n} 次</div>
       <div class="ctl">
@@ -107,6 +131,7 @@
     $('#nAwake').onclick = () => recordEvent(awake ? 'rest' : 'awake', Date.now());
     $('#nUp').onclick = () => {
       if (!confirm('確定起床?\n會結束今晚的睡眠記錄並產生日記')) return;
+      syncNative();                                            // 先取回服務記到的最新事件
       const x = session(), l = x.events[x.events.length - 1];
       // 最後一次翻面是「醒了」卻沒翻回來,且離現在超過 1 小時:問是不是真的醒來起床,還是半夜醒來後又睡著(忘了翻回)
       if (l && l.type === 'awake' && Date.now() - l.t > 60 * 60000 &&
@@ -123,6 +148,7 @@
   }
   function endNight() {
     const s = session(); s.outAt = Date.now(); save(KEY_S, s);
+    if (NB) NB.stopNight();                                    // 停止前景服務
     motion.det = null; if (wakeLock) { wakeLock.release().catch(() => {}); wakeLock = null; }
     $('#night').classList.remove('show');
     const sum = summarizeSession(s);
@@ -163,7 +189,7 @@
   const KEY_I = 'sleepdiary.intro';
   const INTRO = [
     ['⏱', '記錄', ['做事前按「開始」,結束再按「結束」', '自動畫到時鐘上', '☕🍺💊 按一下 = 記下現在']],
-    ['🌙', '睡覺', ['🛏 躺上床 → 🌙 關燈睡覺', '手機充電、螢幕朝下放床邊(約 2 秒後就緒)', '⚠ 請保持螢幕亮著,不要按電源鍵鎖屏', '醒了翻成朝上,再睡翻回朝下', '早上按「起床」結束並產生日記']],
+    ['🌙', '睡覺', ['🛏 躺上床 → 🌙 關燈睡覺', '手機充電、螢幕朝下放床邊(約 2 秒後就緒)', NB ? '螢幕可以關閉,背景會持續偵測' : '⚠ 請保持螢幕亮著,不要按電源鍵鎖屏', '醒了翻成朝上,再睡翻回朝下', '早上按「起床」結束並產生日記']],
     ['🕐', '日記', ['先點圓上時段的「起點」,再點「終點」', '藍框框住的就是選到的範圍', '然後在跳出的選單選類別(各有顏色)', '點圓心或 ⭐ 記品質、備註;ⓘ 看明細']],
     ['📊', '一週', ['每天一條橫條,時間上下對齊', '左側圓點 = 睡眠品質(紅差 → 綠好)', '點任一天可編輯', 'ⓘ 看圖例']]
   ];
@@ -237,10 +263,10 @@
         : `<button class="tb" data-t="${k}"><span class="i">${ic}</span>${t}<small>開始</small></button>`).join('')}</div>
       <div class="sec">⚡ 單次事件 <small>記下「現在」</small></div>
       <div class="g3 e">${EVENTS.map(([k, ic, t]) => `<button class="tb ev" data-ev="${k}"><span class="i" style="font-size:22px">${ic}</span>${t}</button>`).join('')}</div>
-      <div class="sec">🌙 睡眠 <small>充電 · 螢幕朝下放床邊</small></div>
+      <div class="sec">🌙 睡眠 <small>${NB ? '手機放床邊 · 螢幕朝下' : '充電 · 螢幕朝下放床邊'}</small></div>
       <div class="nightrow">
         <button class="tb" id="bBed"><span class="i">🛏</span>躺上床<small>${s && s.bedAt ? '已記 ' + hm(s.bedAt) : '記下上床時間'}</small></button>
-        <button class="big" id="bTry">${inNight ? '🌙 回夜間畫面' : '🌙 關燈睡覺'}<small>${inNight ? '睡眠記錄進行中' : motion.ok ? '📡 感測器正常 · 請保持亮屏' : '⚠ 未偵測到感測器'}</small></button>
+        <button class="big" id="bTry">${inNight ? '🌙 回夜間畫面' : '🌙 關燈睡覺'}<small>${inNight ? '睡眠記錄進行中' : NB ? '📡 背景偵測 · 可以鎖屏' : motion.ok ? '📡 感測器正常 · 請保持亮屏' : '⚠ 未偵測到感測器'}</small></button>
       </div></div>`;
     document.querySelectorAll('[data-t]').forEach(b => b.onclick = () => (timers()[b.dataset.t] ? endTimer : startTimer)(b.dataset.t));
     document.querySelectorAll('[data-ev]').forEach(b => b.onclick = () => recordEvent2(b.dataset.ev));
@@ -468,17 +494,19 @@
     const n = Object.keys(all).length;
     $('#app').innerHTML = `
       <div class="srow"><button class="btn" id="bCsv">📤 匯出 CSV</button><p>把全部紀錄存成試算表檔,可拿給醫師或用 Excel 開啟</p></div>
+      ${NB ? '<div class="srow"><button class="btn alt" id="bBat">🔋 電池設定</button><p>請把本 App 設為「不受限制」,避免整夜偵測被系統關閉</p></div>' : ''}
       <div class="srow"><button class="btn alt" id="bHelp">❓ 使用導覽</button><p>重新查看每個按鈕與圖示的用法</p></div>
       <div class="srow"><button class="btn danger" id="bClr">🗑 清除所有資料</button><p>刪除這支手機上的全部紀錄,無法復原</p></div>
       <p class="hint" style="text-align:center;margin:4px 0 0">📅 已記錄 ${n} 天 · 🔒 資料只存在這支手機,不會上傳</p>`;
     $('#bHelp').onclick = () => showIntro(0);
+    if ($('#bBat')) $('#bBat').onclick = () => NB.batterySettings();
     $('#bCsv').onclick = () => {
       const q = v => `"${String(v ?? '').replace(/"/g, '""')}"`;
       const csv = '﻿' + keys.join(',') + '\n' + Object.keys(all).sort().map(d => keys.map(k => q(all[d][k])).join(',')).join('\n');
       if (window.AndroidBridge) { AndroidBridge.saveFile('sleep-diary.csv', 'text/csv', csv); return; }   // APK 內:存到「下載」
       const a = document.createElement('a'); a.href = URL.createObjectURL(new Blob([csv], { type: 'text/csv' })); a.download = 'sleep-diary.csv'; a.click();
     };
-    $('#bClr').onclick = () => { if (confirm('確定清除所有紀錄?')) { localStorage.removeItem(KEY_E); localStorage.removeItem(KEY_S); localStorage.removeItem(KEY_T); renderTimerBar(); viewData(); } };
+    $('#bClr').onclick = () => { if (confirm('確定清除所有紀錄?')) { if (NB) NB.stopNight(); localStorage.removeItem(KEY_E); localStorage.removeItem(KEY_S); localStorage.removeItem(KEY_T); renderTimerBar(); viewData(); } };
   }
 
   document.querySelectorAll('nav button').forEach(b => b.onclick = () => go(b.dataset.tab));

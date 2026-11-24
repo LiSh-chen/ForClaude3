@@ -1,6 +1,7 @@
 package tw.sleepdiary;
 
 import android.app.Activity;
+import android.app.AlertDialog;
 import android.content.ContentValues;
 import android.content.Context;
 import android.content.Intent;
@@ -16,6 +17,8 @@ import android.webkit.JavascriptInterface;
 import android.widget.Toast;
 import java.io.OutputStream;
 import android.os.Bundle;
+import android.webkit.JsResult;
+import android.webkit.WebChromeClient;
 import android.webkit.WebResourceRequest;
 import android.webkit.WebResourceResponse;
 import android.webkit.WebSettings;
@@ -40,6 +43,19 @@ public class MainActivity extends Activity {
         web.setWebViewClient(new WebViewClient() {
             @Override public WebResourceResponse shouldInterceptRequest(WebView v, WebResourceRequest r) {
                 return loader.shouldInterceptRequest(r.getUrl());
+            }
+        });
+        web.setWebChromeClient(new WebChromeClient() {   // 沒有它,網頁的 alert/confirm 不會顯示(confirm 直接回傳取消)
+            @Override public boolean onJsAlert(WebView v, String url, String message, final JsResult r) {
+                new AlertDialog.Builder(MainActivity.this).setMessage(message)
+                    .setPositiveButton("好", (d, w) -> r.confirm()).setOnCancelListener(d -> r.confirm()).show();
+                return true;
+            }
+            @Override public boolean onJsConfirm(WebView v, String url, String message, final JsResult r) {
+                new AlertDialog.Builder(MainActivity.this).setMessage(message)
+                    .setPositiveButton("確定", (d, w) -> r.confirm()).setNegativeButton("取消", (d, w) -> r.cancel())
+                    .setOnCancelListener(d -> r.cancel()).show();
+                return true;
             }
         });
         web.addJavascriptInterface(new Bridge(), "AndroidBridge");

@@ -84,6 +84,19 @@
   async function lockScreen() { try { wakeLock = await navigator.wakeLock.request('screen'); } catch (e) { wakeLock = null; } }
   document.addEventListener('visibilitychange', () => { if (document.visibilityState === 'visible' && $('#night').classList.contains('show')) { if (NB) syncNative(); else lockScreen(); } });
 
+  /** 自製確認視窗:Android WebView 預設不會顯示 window.confirm,直接當成「取消」 */
+  function askConfirm(msg, okText, cancelText) {
+    return new Promise(resolve => {
+      const el = document.createElement('div');
+      el.style.cssText = 'position:fixed;inset:0;z-index:40;background:#000c;display:flex;align-items:center;justify-content:center;padding:24px';
+      el.innerHTML = `<div style="background:#1b2437;color:#e8ecf7;border-radius:16px;padding:20px;max-width:420px;width:100%"><p style="white-space:pre-line;font-size:17px;line-height:1.5;margin:0 0 16px">${msg}</p><div style="display:grid;gap:10px"><button class="btn" id="cOk" style="margin:0">${okText || '確定'}</button><button class="btn alt" id="cNo" style="margin:0">${cancelText || '取消'}</button></div></div>`;
+      document.body.appendChild(el);
+      const done = v => { el.remove(); resolve(v); };
+      el.querySelector('#cOk').onclick = () => done(true);
+      el.querySelector('#cNo').onclick = () => done(false);
+    });
+  }
+
   // ---------- 夜間流程 ----------
   function recordEvent(type, t) {
     const s = session(); if (!s || !s.tryAt) return;
@@ -122,20 +135,22 @@
     const stat = NB
       ? (s.nArmed ? '✓ 背景偵測就緒 · 可以鎖屏' : s.nRunning ? '⏳ 請把手機放平,約 2 秒後就緒' : '⚠ 背景偵測未運作 · 請用下方按鈕')
       : (motion.det ? '✓ 翻面偵測就緒' : motion.ok ? '⏳ 請把手機放平,約 2 秒後就緒' : '⚠ 未偵測到感測器 · 請用下方按鈕');
-    $('#night').innerHTML = `
+    const html = `
       <div class="st"><b>${awake ? '👀 醒著' : '😴 睡眠中'}</b>${stat}<br>已記錄醒來 ${n} 次</div>
       <div class="ctl">
         <button id="nAwake">${awake ? '我再睡了' : '我醒了'}</button>
         <button id="nUp">☀ 起床</button>
       </div>`;
+    if (renderNight.html === html && $('#nUp')) return;          // 沒有變化:保留現有按鈕
+    renderNight.html = html; $('#night').innerHTML = html;
     $('#nAwake').onclick = () => recordEvent(awake ? 'rest' : 'awake', Date.now());
-    $('#nUp').onclick = () => {
-      if (!confirm('確定起床?\n會結束今晚的睡眠記錄並產生日記')) return;
+    $('#nUp').onclick = async () => {
+      if (!(await askConfirm('確定起床?\n會結束今晚的睡眠記錄並產生日記', '確定起床', '取消'))) return;
       syncNative();                                            // 先取回服務記到的最新事件
       const x = session(), l = x.events[x.events.length - 1];
       // 最後一次翻面是「醒了」卻沒翻回來,且離現在超過 1 小時:問是不是真的醒來起床,還是半夜醒來後又睡著(忘了翻回)
       if (l && l.type === 'awake' && Date.now() - l.t > 60 * 60000 &&
-          !confirm(`最後一次翻面是 ${hm(l.t)}。\n這是你「醒來起床」的時間嗎?\n\n[確定] 是,那時就醒了\n[取消] 不是,只是半夜醒來,後來又睡著了(約算 15 分鐘)`)) {
+          !(await askConfirm(`最後一次翻面是 ${hm(l.t)}。\n這是你「醒來起床」的時間嗎?`, '是,那時就醒了', '不是,只是半夜醒來(約算 15 分鐘)'))) {
         x.events.push({ type: 'rest', t: l.t + 15 * 60000 }); save(KEY_S, x);
       }
       endNight();
@@ -506,7 +521,7 @@
       if (window.AndroidBridge) { AndroidBridge.saveFile('sleep-diary.csv', 'text/csv', csv); return; }   // APK 內:存到「下載」
       const a = document.createElement('a'); a.href = URL.createObjectURL(new Blob([csv], { type: 'text/csv' })); a.download = 'sleep-diary.csv'; a.click();
     };
-    $('#bClr').onclick = () => { if (confirm('確定清除所有紀錄?')) { if (NB) NB.stopNight(); localStorage.removeItem(KEY_E); localStorage.removeItem(KEY_S); localStorage.removeItem(KEY_T); renderTimerBar(); viewData(); } };
+    $('#bClr').onclick = async () => { if (await askConfirm('確定清除所有紀錄?\n此動作無法復原', '清除', '取消')) { if (NB) NB.stopNight(); localStorage.removeItem(KEY_E); localStorage.removeItem(KEY_S); localStorage.removeItem(KEY_T); renderTimerBar(); viewData(); } };
   }
 
   document.querySelectorAll('nav button').forEach(b => b.onclick = () => go(b.dataset.tab));

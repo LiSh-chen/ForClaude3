@@ -60,4 +60,29 @@ const mg = T.mergeAwake(Object.assign({}, base), ivs);
 assert.strictEqual(mg.awakenings, 2); assert.strictEqual(mg.awakeMin, 5);
 assert.strictEqual(T.mergeAwake({ awakenings: 3, awakeMin: 90 }, ivs).awakenings, 3);   // 格子反算較大時保留較大者
 assert.strictEqual(T.mergeAwake({ awakenings: '', awakeMin: '' }, []).awakenings, '');
+// 睡眠效率
+{
+  // 23:00 躺床、23:30–07:00 睡(7.5h),躺到 07:30 → TIB 8.5h、TST 7.5h → 88%
+  const sl = {}; T.paint(sl, 'inbed', 10, 10); T.paint(sl, 'sleep', 11, 25); T.paint(sl, 'inbed', 26, 26);
+  const d0 = T.derive(sl);
+  assert.strictEqual(d0.tibMin, 510); assert.strictEqual(d0.tstMin, 450); assert.strictEqual(d0.effPct, 88);
+  // 併入 4 次短暫醒來(3、2、4、6 分 = 15 分):TST = 450 − 15 = 435 → 85%
+  const base0 = new Date(2026, 10, 24, 18, 0).getTime(), M = 60000;
+  const iv = [[40, 3], [100, 2], [200, 4], [250, 6]].map(([a, b]) => [base0 + (330 + a) * M, base0 + (330 + a + b) * M]);   // 23:30 後
+  const d1 = T.deriveWithAwake(sl, iv, '2026-11-25');
+  assert.strictEqual(d1.awakenings, 4); assert.strictEqual(d1.awakeMin, 15);
+  assert.strictEqual(d1.tstMin, 435); assert.strictEqual(d1.effPct, 85);
+  // 長時間醒來(40 分)已造成格子缺口:不重複計算
+  const sl2 = {}; T.paint(sl2, 'inbed', 10, 10); T.paint(sl2, 'sleep', 11, 25); T.paint(sl2, 'inbed', 26, 26); T.paint(sl2, 'inbed', 16, 17);   // 02:00–03:00 兩格缺口
+  const w = [[base0 + 480 * M, base0 + 520 * M]];   // 02:00–02:40 精確
+  const d2 = T.deriveWithAwake(sl2, w, '2026-11-25');
+  assert.strictEqual(d2.awakenings, 1); assert.strictEqual(d2.awakeMin, 40);   // 兩格缺口都被精確的 40 分鐘涵蓋,以精確資料為準
+  T.paint(sl2, 'inbed', 22, 22);                                               // 另一個沒被精確資料涵蓋的缺口(+30 分)
+  const d2b = T.deriveWithAwake(sl2, w, '2026-11-25');
+  assert.strictEqual(d2b.awakenings, 2); assert.strictEqual(d2b.awakeMin, 70);
+  // 使用者另外手動加的缺口仍會計入
+  const sl3 = {}; T.paint(sl3, 'inbed', 10, 10); T.paint(sl3, 'sleep', 11, 25); T.paint(sl3, 'inbed', 26, 26); T.paint(sl3, 'inbed', 20, 20);
+  const d3 = T.deriveWithAwake(sl3, iv, '2026-11-25');
+  assert.strictEqual(d3.awakenings, 5); assert.strictEqual(d3.awakeMin, 45);
+}
 console.log('timeline tests passed');

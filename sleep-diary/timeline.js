@@ -55,13 +55,14 @@
   function derive(slots) {
     if (!Object.keys(slots).length) return null;
     var out = { bedTime: '', tryTime: '', latencyMin: '', awakenings: '', awakeMin: '', finalWake: '', getUp: '',
-      alarm: '否', napCount: '', napMin: '', alcoholLast: '', caffeineLast: '', medTime: '', light: '', exercise: '', ritual: '', screen: '', meal: '' };
+      alarm: '否', napCount: '', napMin: '', alcoholLast: '', caffeineLast: '', medTime: '', light: '', exercise: '', ritual: '', screen: '', meal: '', tibMin: '', spanMin: '', tstMin: '', effPct: '' };
     var inBed = idx(slots, function (i, a) { return i < NIGHT_END && (a.indexOf('inbed') >= 0 || a.indexOf('sleep') >= 0); });
     var sleep = idx(slots, function (i) { return i < NIGHT_END && has(slots, i, 'sleep'); });
     if (inBed.length) {
       var first = inBed[0], last = inBed[inBed.length - 1];
       out.bedTime = out.tryTime = slotStart(first);
       out.getUp = slotEnd(last);
+      out.tibMin = (last - first + 1) * STEP;                  // 在床時間 TIB:躺上床 → 起床
       if (sleep.length) {
         var fs = sleep[0], ls = sleep[sleep.length - 1], gaps = [];
         for (var i = fs; i <= ls; i++) if (!has(slots, i, 'sleep')) gaps.push(i);
@@ -70,6 +71,9 @@
         out.awakenings = g.length;
         out.awakeMin = gaps.length * STEP;
         out.finalWake = slotEnd(ls);
+        out.spanMin = (ls - fs + 1) * STEP;                    // 第一次睡著 → 最後醒來
+        out.tstMin = sleep.length * STEP;                      // 實際睡著時間 TST
+        out.effPct = Math.round(100 * out.tstMin / out.tibMin);   // 睡眠效率 = TST ÷ TIB
       }
     }
     if (idx(slots, function (i) { return has(slots, i, 'alarm'); }).length) out.alarm = '是';
@@ -99,7 +103,7 @@
         st = 'sleep';
         (sum.intervals || []).forEach(function (iv) {
           var ov = Math.min(e, iv.to) - Math.max(s, iv.from);
-          if ((c >= iv.from && c < iv.to) || ov >= 10 * 60000) st = 'inbed';
+          if ((c >= iv.from && c < iv.to) || ov >= 20 * 60000) st = 'inbed';   // 短暫醒來由精確資料呈現
         });
       } else if (c >= sum.finalWakeAt && c < sum.getUpAt) st = 'inbed';
       if (st) slots[i] = [st];
@@ -122,7 +126,33 @@
     return d;
   }
 
-  var api = { slotPos: slotPos, mergeAwake: mergeAwake, N: N, STATES: STATES, MARKS: MARKS, paint: paint, add: add, derive: derive, slotStart: slotStart, slotEnd: slotEnd, slotsFromSession: slotsFromSession };
+  /**
+   * derive + 精確醒來時段。精確時段所在的格子缺口不重複計算;使用者手動在時鐘上加的缺口仍會計入。
+   * 睡眠效率 = (第一次睡著到最後醒來 − 醒來總分鐘) ÷ 在床時間。
+   */
+  function deriveWithAwake(slots, ivs, dateStr) {
+    var d = derive(slots);
+    if (!d || !ivs || !ivs.length) return d;
+    var sleep = idx(slots, function (i) { return i < NIGHT_END && has(slots, i, 'sleep'); });
+    var preciseMs = 0; ivs.forEach(function (iv) { preciseMs += Math.max(0, iv[1] - iv[0]); });
+    var remaining = [];
+    if (sleep.length) {
+      for (var i = sleep[0]; i <= sleep[sleep.length - 1]; i++) {
+        if (has(slots, i, 'sleep')) continue;
+        var covered = ivs.some(function (iv) { return slotPos(iv[0], dateStr) < i + 1 && Math.max(slotPos(iv[1], dateStr), slotPos(iv[0], dateStr) + 0.01) > i; });
+        if (!covered) remaining.push(i);
+      }
+    }
+    d.awakenings = ivs.length + runs(remaining).length;
+    d.awakeMin = Math.max(1, Math.round(preciseMs / 60000)) + remaining.length * STEP;
+    if (d.spanMin !== '' && d.tibMin !== '') {
+      d.tstMin = Math.max(0, d.spanMin - d.awakeMin);
+      d.effPct = Math.min(100, Math.round(100 * d.tstMin / d.tibMin));
+    }
+    return d;
+  }
+
+  var api = { slotPos: slotPos, mergeAwake: mergeAwake, deriveWithAwake: deriveWithAwake, N: N, STATES: STATES, MARKS: MARKS, paint: paint, add: add, derive: derive, slotStart: slotStart, slotEnd: slotEnd, slotsFromSession: slotsFromSession };
   if (typeof module !== 'undefined' && module.exports) module.exports = api;
   else root.SleepTimeline = api;
 })(typeof self !== 'undefined' ? self : this);

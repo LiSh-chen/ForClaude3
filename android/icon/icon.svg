@@ -1,0 +1,10 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 108 108" width="512" height="512">
+  <defs>
+    <linearGradient id="bg" x1="0" y1="0" x2="108" y2="108" gradientUnits="userSpaceOnUse"><stop offset="0" stop-color="#7B61D6"/><stop offset="1" stop-color="#1B2470"/></linearGradient>
+    <radialGradient id="glow" cx="50" cy="56" r="32" gradientUnits="userSpaceOnUse"><stop offset="0" stop-color="#D9CCFF" stop-opacity=".30"/><stop offset="1" stop-color="#D9CCFF" stop-opacity="0"/></radialGradient>
+  </defs>
+  <rect width="108" height="108" fill="url(#bg)"/>
+  <circle cx="50" cy="56" r="32" fill="url(#glow)"/>
+  <path d="M48.33,35.06 A22.00,22.00 0 1,0 70.71,64.43 A18.50,18.50 0 0,1 48.33,35.06 Z" fill="#FFF1C9"/>
+  <path d="M73.50,30.00 L74.79,35.21 L80.00,36.50 L74.79,37.79 L73.50,43.00 L72.21,37.79 L67.00,36.50 L72.21,35.21 Z" fill="#FFFFFF"/><path d="M38.00,32.20 L38.75,35.25 L41.80,36.00 L38.75,36.75 L38.00,39.80 L37.25,36.75 L34.20,36.00 L37.25,35.25 Z" fill="#FFFFFF"/><path d="M77.00,62.80 L77.63,65.37 L80.20,66.00 L77.63,66.63 L77.00,69.20 L76.37,66.63 L73.80,66.00 L76.37,65.37 Z" fill="#FFFFFF"/>
+</svg>

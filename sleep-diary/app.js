@@ -187,6 +187,8 @@
   function go(tab) {
     state.tab = tab;
     document.querySelectorAll('nav button').forEach(b => b.classList.toggle('on', b.dataset.tab === tab));
+    const H = { night: '記錄 · 今天要記什麼?', diary: '日記 · 點時鐘上的時段來記錄', week: '一週 · 近 7 天的睡眠', data: '設定 · 資料與說明' };
+    $('#sub').textContent = H[tab];
     VIEWS()[tab](); $('#app').scrollTop = 0;
   }
   const refresh = () => VIEWS()[state.tab]();
@@ -270,7 +272,9 @@
 
   // ---------- 記錄 ----------
   /** 由格子反算欄位,再併入精確的醒來時段(30 分鐘格子會吃掉短暫醒來) */
-  const deriveFull = e => { const d = e && e.slots && Object.keys(e.slots).length ? TL.derive(e.slots) : null; return d && e.awakeIv ? TL.mergeAwake(d, e.awakeIv) : d; };
+  const deriveFull = e => (e && e.slots && Object.keys(e.slots).length) ? TL.deriveWithAwake(e.slots, e.awakeIv, e.date || state.date) : null;
+  const effInfo = p => p === '' || p == null ? ['#9aa0bd', ''] : p >= 85 ? ['#2e9e5b', '良好'] : p >= 75 ? ['#e0a100', '尚可'] : ['#e8743b', '偏低'];
+  const hmm = m => m === '' || m == null ? '' : `${Math.floor(m / 60)}h${pad(Math.round(m % 60))}`;
 
   /** 補救:舊版把短暫醒來吃掉了。原生服務的紀錄在結束後仍保留,啟動時比對「嘗試入睡時間」找到那晚的日記,補回精確醒來時段。 */
   function recoverAwake() {
@@ -293,13 +297,13 @@
     $('#app').innerHTML = `<div class="rec">
       <div class="sec">⏱ 即時計時 <small>${nT ? nT + ' 項進行中' : '點一下開始,再點一下結束'}</small></div>
       <div class="g3 t">${TIMERS.map(([k, ic, t]) => T[k]
-        ? `<button class="tb run" data-t="${k}"><span class="i">⏹</span>${t}<small>自 ${hm(T[k])}</small></button>`
-        : `<button class="tb" data-t="${k}"><span class="i">${ic}</span>${t}<small>開始</small></button>`).join('')}</div>
+        ? `<button class="tb run" data-t="${k}"><span class="bub">⏹</span>${t}<small>進行中 · ${hm(T[k])}</small></button>`
+        : `<button class="tb" data-t="${k}"><span class="bub" style="background:${catColor(k)}2b">${ic}</span>${t}<small>點一下開始</small></button>`).join('')}</div>
       <div class="sec">⚡ 單次事件 <small>記下「現在」</small></div>
-      <div class="g3 e">${EVENTS.map(([k, ic, t]) => `<button class="tb ev" data-ev="${k}"><span class="i" style="font-size:22px">${ic}</span>${t}</button>`).join('')}</div>
+      <div class="g3 e">${EVENTS.map(([k, ic, t]) => `<button class="tb ev" data-ev="${k}"><span class="bub" style="background:${catColor(k)}2b">${ic}</span>${t}</button>`).join('')}</div>
       <div class="sec">🌙 睡眠 <small>${NB ? '手機放床邊 · 螢幕朝下' : '充電 · 螢幕朝下放床邊'}</small></div>
       <div class="nightrow">
-        <button class="tb" id="bBed"><span class="i">🛏</span>躺上床<small>${s && s.bedAt ? '已記 ' + hm(s.bedAt) : '記下上床時間'}</small></button>
+        <button class="tb" id="bBed"><span class="bub" style="background:#4a54c82b">🛏</span>躺上床<small>${s && s.bedAt ? '已記 ' + hm(s.bedAt) : '記下上床時間'}</small></button>
         <button class="big" id="bTry">${inNight ? '🌙 回夜間畫面' : '🌙 關燈睡覺'}<small>${inNight ? '睡眠記錄進行中' : NB ? '📡 背景偵測 · 可以鎖屏' : motion.ok ? '📡 感測器正常 · 請保持亮屏' : '⚠ 未偵測到感測器'}</small></button>
       </div></div>`;
     document.querySelectorAll('[data-t]').forEach(b => b.onclick = () => (timers()[b.dataset.t] ? endTimer : startTimer)(b.dataset.t));
@@ -319,7 +323,7 @@
   const tl = { anchor: null, sel: null };   // anchor = 已點的起點;sel = 已框選的範圍 {lo, hi}
   const catColor = k => COL[k] || MCOL[k] || '#888';
   const LIGHT_BG = ['inbed', 'nap', 'light'];
-  const COL = { sleep: '#2f4a8a', inbed: '#f6c177', nap: '#9ecbf5' };
+  const COL = { sleep: '#3b4cca', inbed: '#ffb347', nap: '#8fc9ff' };
   const rad = d => d * Math.PI / 180;
   const pt = (r, d) => [200 + r * Math.sin(rad(d)), 200 - r * Math.cos(rad(d))];
   const f = n => n.toFixed(1);
@@ -338,7 +342,7 @@
       const [r0, r1] = inner ? [84, 124] : [128, 172];
       const a = slots[i] || [], st = a.find(k => COL[k]) || '', ms = a.filter(k => MCOL[k]);
       const h = ((inner ? 18 * 60 + i * 30 : (i - 12) * 30) / 60) % 24, night = h >= 22 || h < 7;
-      parts.push(`<path data-i="${i}" d="${sector(r0, r1, a0, a1)}" fill="${st ? COL[st] : night ? '#e6e9f4' : '#fdf6dc'}" stroke="#fff" stroke-width="1"/>`);
+      parts.push(`<path data-i="${i}" d="${sector(r0, r1, a0, a1)}" fill="${st ? COL[st] : night ? '#e8eaf8' : '#fff6dc'}" stroke="#fff" stroke-width="1"/>`);
       if (ms.length) {   // 其他活動:專屬顏色色塊(有睡眠狀態時佔外側 45%,否則佔滿)
         const rm = st ? r0 + (r1 - r0) * 0.55 : r0, th = (r1 - rm) / ms.length;
         ms.forEach((k, n) => parts.push(`<path data-i="${i}" d="${sector(rm + n * th, rm + (n + 1) * th, a0, a1)}" fill="${MCOL[k]}" stroke="#fff" stroke-width=".8"/>`));
@@ -363,14 +367,14 @@
     const [lx, ly] = pt(104, 315);
     parts.push(`<text x="${f(lx)}" y="${f(ly)}" font-size="9" fill="#667" text-anchor="middle" pointer-events="none" transform="rotate(-45 ${f(lx)} ${f(ly)})">前一晚</text>`);
     parts.push('<circle data-c="1" cx="200" cy="200" r="80" fill="#fff" stroke="#e3e7f1"/>');
-    const d = deriveFull(e), sleepN = Object.keys(slots).filter(k => +k < 36 && slots[k].includes('sleep')).length, mins = sleepN * 30, c = [];
+    const d = deriveFull(e), sleepN = Object.keys(slots).filter(k => +k < 36 && slots[k].includes('sleep')).length, mins = d && d.tstMin !== '' ? d.tstMin : sleepN * 30, c = [];
     let y0 = 190;
     if (tl.sel) {
       c.push(`<tspan x="200" dy="0" font-size="22" font-weight="700" fill="#1565c0">${TL.slotStart(lo)}</tspan><tspan x="200" dy="24" font-size="22" font-weight="700" fill="#1565c0">→ ${TL.slotEnd(hi)}</tspan><tspan x="200" dy="22" font-size="13" fill="#555">${durTxt(hi - lo + 1)}</tspan>`); y0 = 178;
     } else if (tl.anchor != null) {
       c.push(`<tspan x="200" dy="0" font-size="13" fill="#555">起點</tspan><tspan x="200" dy="28" font-size="26" font-weight="700" fill="#1565c0">${TL.slotStart(tl.anchor)}</tspan><tspan x="200" dy="22" font-size="13" fill="#555">再點終點</tspan>`); y0 = 175;
     } else if (sleepN) {
-      c.push(`<tspan x="200" dy="0" font-size="22" font-weight="700" fill="#2f4a8a">😴 ${Math.floor(mins / 60)}h${mins % 60 ? pad(mins % 60) : ''}</tspan>`);
+      c.push(`<tspan x="200" dy="0" font-size="22" font-weight="700" fill="#3b4cca">😴 ${Math.floor(mins / 60)}h${mins % 60 ? pad(Math.round(mins % 60)) : ''}</tspan>`);
       if (d && d.bedTime) c.push(`<tspan x="200" dy="22" font-size="13" fill="#555">${d.bedTime} → ${d.getUp}</tspan>`);
       c.push(`<tspan x="200" dy="26" font-size="20">${e.quality ? FACE[e.quality - 1] : '⭐'}</tspan>`);
     } else c.push(`<tspan x="200" dy="0" font-size="26">👆</tspan><tspan x="200" dy="24" font-size="13" fill="#888">點時段開始</tspan>`);
@@ -378,7 +382,15 @@
     $('#grid').innerHTML = `<svg class="clock" viewBox="0 0 400 400">${parts.join('')}</svg>`;
     const stl = $('#tlstat'), mini = $('#mini');
     if (stl) stl.innerHTML = tl.sel ? `已選 <b>${TL.slotStart(lo)} – ${TL.slotEnd(hi)}</b>(${durTxt(hi - lo + 1)})` : tl.anchor != null ? `起點 <b>${TL.slotStart(tl.anchor)}</b> · 再點終點` : '👆 點一個時段當起點,再點終點';
-    if (mini) mini.innerHTML = [['🛏 上床', d && d.bedTime || '—'], ['🌅 起床', d && d.getUp || '—'], ['👀 中途醒', d && d.awakenings !== '' && d.awakenings !== undefined ? d.awakenings + ' 次' : '—']].map(([l, v]) => `<div class="mc"><small>${l}</small><b>${v}</b></div>`).join('');
+    if (mini) {
+      const has = d && d.bedTime, [ec, el] = effInfo(d ? d.effPct : ''), nA = d && d.awakenings !== '' && d.awakenings !== undefined ? d.awakenings : null;
+      const cards = [
+        ['🛏 上床', has ? d.bedTime : '—', has && d.latencyMin !== '' ? `入睡約 ${d.latencyMin} 分` : '', '#4a54c8'],
+        ['🌅 起床', d && d.getUp ? d.getUp : '—', d && d.tibMin !== '' ? `在床 ${hmm(d.tibMin)}` : '', '#f29f05'],
+        ['👀 中途醒', nA === null ? '—' : nA + ' 次', nA === null ? '' : nA ? `共 ${d.awakeMin} 分` : '一覺到天亮', '#e8743b'],
+        ['📊 睡眠效率', d && d.effPct !== '' ? d.effPct + '%' : '—', el, ec]];
+      mini.innerHTML = cards.map(([l, v, s2, c]) => `<div class="mc" style="--ac:${c};${l.includes('效率') ? `--vc:${c}` : ''}"><small>${l}</small><b>${v}</b><small class="s2">${s2}</small></div>`).join('');
+    }
   }
 
   function tapSlot(i) {
@@ -463,7 +475,7 @@
         <button class="ib t" id="bType">${e.dayType || defType(state.date)}</button><button class="ib" id="bStar">⭐</button><button class="ib" id="bInfo">ⓘ</button>
       </div>
       <div class="stl" id="tlstat"></div>
-      <div id="grid"></div>
+      <div id="grid" class="clockcard"></div>
       <div class="g3 mini" id="mini"></div>`;
     if (!e.dayType) patch('dayType', defType(state.date));
     drawClock(e);
@@ -513,21 +525,23 @@
       });
       p.push('</g>');
     });
-    const st = days.map(d => (all[d] || {}).slots).filter(s => s && Object.keys(s).length).map(s => {
-      const inb = Object.keys(s).map(Number).filter(i => i < 36 && (s[i].includes('sleep') || s[i].includes('inbed')));
-      return { sleep: Object.keys(s).filter(i => +i < 36 && s[i].includes('sleep')).length / 2, bed: inb.length ? Math.min(...inb) : null, up: inb.length ? Math.max(...inb) + 1 : null, inBed: inb.length / 2 };
+    const st = days.map(d => all[d]).filter(e => e && e.slots && Object.keys(e.slots).length).map(e => {
+      const s = e.slots, dd = deriveFull(e), inb = Object.keys(s).map(Number).filter(i => i < 36 && (s[i].includes('sleep') || s[i].includes('inbed')));
+      return { sleep: dd && dd.tstMin !== '' ? dd.tstMin / 60 : 0, bed: inb.length ? Math.min(...inb) : null, up: inb.length ? Math.max(...inb) + 1 : null, inBed: dd && dd.tibMin !== '' ? dd.tibMin / 60 : inb.length / 2 };
     }).filter(x => x.bed !== null);
     const qs = days.map(d => +(all[d] || {}).quality).filter(Boolean);
-    const per = days.map(d => { const s = (all[d] || {}).slots; if (!s || !Object.keys(s).length) return null; const k = Object.keys(s).map(Number).filter(i => i < 36 && (s[i].includes('sleep') || s[i].includes('inbed'))); return { d, sleep: Object.keys(s).filter(i => +i < 36 && s[i].includes('sleep')).length / 2, bed: k.length ? Math.min(...k) : null }; }).filter(x => x && x.bed !== null);
+    const per = days.map(d => { const s = (all[d] || {}).slots; if (!s || !Object.keys(s).length) return null; const k = Object.keys(s).map(Number).filter(i => i < 36 && (s[i].includes('sleep') || s[i].includes('inbed'))); const dd = deriveFull(all[d]); return { d, sleep: dd && dd.tstMin !== '' ? Math.round(dd.tstMin / 6) / 10 : Object.keys(s).filter(i => +i < 36 && s[i].includes('sleep')).length / 2, bed: k.length ? Math.min(...k) : null }; }).filter(x => x && x.bed !== null);
     const mmdd = d => d.slice(5).replace('-', '/');
     const tips = per.length >= 2 ? (() => { const lo = per.reduce((x, y) => y.sleep < x.sleep ? y : x), hi = per.reduce((x, y) => y.sleep > x.sleep ? y : x), beds = per.map(x => x.bed), gap = (Math.max(...beds) - Math.min(...beds)) / 2;
       return `<div class="srow" style="margin:8px 0 0;padding:8px 12px;font-size:14px;line-height:1.7">⏳ 最長 <b>${mmdd(hi.d)}</b> ${hi.sleep}h · 最短 <b>${mmdd(lo.d)}</b> ${lo.sleep}h<br>🕒 上床時間落差 <b>${gap}</b> 小時 ${gap <= 1 ? '(很規律 👍)' : gap >= 2 ? '(落差偏大)' : ''}</div>`; })() : '';
     const avg = arr => arr.reduce((x, y) => x + y, 0) / arr.length, sT = i => TL.slotStart(Math.round(i));
-    const stats = st.length ? `<div class="stats"><span>😴 ${avg(st.map(x => x.sleep)).toFixed(1)}h<small>平均睡眠</small></span><span>🛏 ${sT(avg(st.map(x => x.bed)))}<small>平均上床</small></span><span>🌅 ${sT(avg(st.map(x => x.up)))}<small>平均起床</small></span>${qs.length ? `<span>⭐ ${avg(qs).toFixed(1)}<small>平均品質</small></span>` : ''}<span>📊 ${Math.round(100 * st.reduce((x, y) => x + y.sleep, 0) / st.reduce((x, y) => x + y.inBed, 0))}%<small>睡眠效率</small></span></div>` : '<div class="stats" style="font-weight:400;color:var(--sub)">這週還沒有紀錄,到「記錄」或「日記」開始吧</div>';
+    const effAll = st.length ? Math.round(100 * st.reduce((x, y) => x + y.sleep, 0) / st.reduce((x, y) => x + y.inBed, 0)) : 0;
+    const sp = (ic, v, l, c) => `<span><em>${ic}</em><b${c ? ` style="color:${c}"` : ''}>${v}</b><small>${l}</small></span>`;
+    const stats = st.length ? `<div class="stats">${sp('😴', avg(st.map(x => x.sleep)).toFixed(1) + 'h', '平均睡眠')}${sp('🛏', sT(avg(st.map(x => x.bed))), '平均上床')}${sp('🌅', sT(avg(st.map(x => x.up))), '平均起床')}${qs.length ? sp('⭐', avg(qs).toFixed(1), '平均品質') : ''}${sp('📊', effAll + '%', '睡眠效率', effInfo(effAll)[0])}</div>` : '<div class="stats" style="font-weight:400;color:var(--sub)">這週還沒有紀錄,到「記錄」或「日記」開始吧</div>';
     const leg = `<div class="leg"><span><i style="background:${COL.sleep}"></i>睡著</span><span><i style="background:${COL.inbed}"></i>躺著醒著</span><span><i style="background:${COL.nap}"></i>小睡</span><span><i style="background:#17a2b8"></i>活動(細條)</span><span><i style="background:${QCOL[0]};border-radius:50%"></i>→<i style="background:${QCOL[4]};border-radius:50%;margin-left:4px"></i>品質 1→5</span></div>`;
     const prev = new Date(end); prev.setDate(prev.getDate() - 7); const next = new Date(end); next.setDate(next.getDate() + 7);
     $('#app').innerHTML = `<div class="bar"><button class="ib" id="wPrev">◀</button><b style="flex:1;text-align:center">${days[0].slice(5).replace('-', '/')} – ${days[6].slice(5).replace('-', '/')}</b><button class="ib" id="wNext">▶</button><button class="ib noprint" id="wInfo">ⓘ</button><button class="ib noprint" id="wPrint">🖨</button></div>
-      <svg class="wk" viewBox="0 0 ${W} ${H}">${p.join('')}</svg>${stats}${tips}${leg}`;
+      <div class="wkcard"><svg class="wk" viewBox="0 0 ${W} ${H}">${p.join('')}</svg></div>${stats}${tips}${leg}`;
     $('#wPrev').onclick = () => { state.date = ymd(prev); viewWeek(); };
     $('#wNext').onclick = () => { state.date = ymd(next); viewWeek(); };
     $('#wInfo').onclick = openLegend; $('#wPrint').onclick = () => (window.AndroidBridge ? AndroidBridge.print() : window.print());

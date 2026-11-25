@@ -173,6 +173,7 @@
       date, bedTime: hm(sum.bedAt), tryTime: hm(sum.tryAt), awakenings: sum.awakenings, awakeMin: sum.awakeMin,
       finalWake: hm(sum.finalWakeAt), getUp: hm(sum.getUpAt), _auto: ['bedTime', 'tryTime', 'awakenings', 'awakeMin', 'finalWake', 'getUp'],
       _intervals: sum.intervals.map(i => [hm(i.from), hm(i.to)]),
+      awakeIv: sum.intervals.map(i => [i.from, i.to]),          // 精確醒來時段(時間戳),不受 30 分鐘格子限制
       slots: TL.slotsFromSession(sum, date)
     });
     e.dayType = e.dayType || ([0, 6].includes(new Date(date + 'T00:00').getDay()) ? '休息日' : '工作日');
@@ -237,7 +238,7 @@
       const r = slotRef(t), cur = all[r.date] || (all[r.date] = { date: r.date });
       cur.slots = TL.add(cur.slots || {}, kind, r.idx); touched.add(r.date);
     }
-    touched.forEach(dt => { const c = all[dt], dv = TL.derive(c.slots); if (dv) { Object.assign(c, dv); c._auto = []; } if (!c.dayType) c.dayType = defType(dt); });
+    touched.forEach(dt => { const c = all[dt], dv = deriveFull(c); if (dv) { Object.assign(c, dv); c._auto = []; } if (!c.dayType) c.dayType = defType(dt); });
     save(KEY_E, all); return [...touched];
   }
   function toast(msg) {
@@ -268,6 +269,24 @@
   setInterval(renderTimerBar, 20000);
 
   // ---------- 記錄 ----------
+  /** 由格子反算欄位,再併入精確的醒來時段(30 分鐘格子會吃掉短暫醒來) */
+  const deriveFull = e => { const d = e && e.slots && Object.keys(e.slots).length ? TL.derive(e.slots) : null; return d && e.awakeIv ? TL.mergeAwake(d, e.awakeIv) : d; };
+
+  /** 補救:舊版把短暫醒來吃掉了。原生服務的紀錄在結束後仍保留,啟動時比對「嘗試入睡時間」找到那晚的日記,補回精確醒來時段。 */
+  function recoverAwake() {
+    if (!NB) return;
+    const st = nativeState(); if (!st || st.running || !st.tryAt || !(st.events || []).length) return;
+    const ivs = []; let from = null;
+    st.events.forEach(ev => { if (ev.type === 'awake' && from === null) from = ev.t; else if (ev.type === 'rest' && from !== null) { ivs.push([from, ev.t]); from = null; } });
+    if (!ivs.length) return;
+    const all = entries(), tryHM = hm(st.tryAt);
+    const key = Object.keys(all).find(d => !all[d].awakeIv && all[d].tryTime === tryHM && Math.abs(new Date(d + 'T00:00').getTime() - st.tryAt) < 24 * 3600e3);
+    if (!key) return;
+    const e = all[key]; e.awakeIv = ivs;
+    const dv = deriveFull(e); if (dv) Object.assign(e, dv);
+    save(KEY_E, all); toast('已補回 ' + key.slice(5).replace('-', '/') + ' 的醒來紀錄');
+  }
+
   function viewNight() {
     const s = session(), T = timers(), inNight = s && s.tryAt && !s.outAt;
     const nT = Object.keys(T).length;
@@ -328,6 +347,14 @@
       if (lo != null && i >= lo && i <= hi) over.push(`<path data-i="${i}" d="${sector(r0 - 2, r1 + 2, a0, a1)}" fill="rgba(25,118,210,.30)" stroke="#1565c0" stroke-width="${tl.sel ? 2.5 : 4}"/>`);
     }
     parts.push(...over);
+    (e.awakeIv || []).forEach(([f0, f1]) => {   // 精確醒來時段:即使只有幾分鐘也畫出可見的橘色細線
+      let p0 = TL.slotPos(f0, e.date || state.date), p1 = Math.max(TL.slotPos(f1, e.date || state.date), p0 + 0.35);
+      if (p1 < 0 || p0 > 60) return;
+      const seg = (x, y) => { const inner = x < 12, [r0, r1] = inner ? [84, 124] : [128, 172], ang = q => inner ? 270 + q * 7.5 : (q - 12) * 7.5;
+        parts.push(`<path d="${sector(r0 - 3, r1 + 3, ang(x), ang(y))}" fill="#ff9f1c" stroke="#fff" stroke-width="1" pointer-events="none"/>`); };
+      p0 = Math.max(0, p0); p1 = Math.min(60, p1);
+      if (p0 < 12 && p1 > 12) { seg(p0, 12); seg(12, p1); } else seg(p0, p1);
+    });
     for (let h = 0; h < 24; h++) {   // 每小時刻度,每 3 小時標數字
       const [x1, y1] = pt(173, h * 15), [x2, y2] = pt(h % 3 ? 177 : 181, h * 15);
       parts.push(`<line x1="${f(x1)}" y1="${f(y1)}" x2="${f(x2)}" y2="${f(y2)}" stroke="${h % 3 ? '#bbb' : '#777'}"/>`);
@@ -336,7 +363,7 @@
     const [lx, ly] = pt(104, 315);
     parts.push(`<text x="${f(lx)}" y="${f(ly)}" font-size="9" fill="#667" text-anchor="middle" pointer-events="none" transform="rotate(-45 ${f(lx)} ${f(ly)})">前一晚</text>`);
     parts.push('<circle data-c="1" cx="200" cy="200" r="80" fill="#fff" stroke="#e3e7f1"/>');
-    const d = TL.derive(slots), sleepN = Object.keys(slots).filter(k => +k < 36 && slots[k].includes('sleep')).length, mins = sleepN * 30, c = [];
+    const d = deriveFull(e), sleepN = Object.keys(slots).filter(k => +k < 36 && slots[k].includes('sleep')).length, mins = sleepN * 30, c = [];
     let y0 = 190;
     if (tl.sel) {
       c.push(`<tspan x="200" dy="0" font-size="22" font-weight="700" fill="#1565c0">${TL.slotStart(lo)}</tspan><tspan x="200" dy="24" font-size="22" font-weight="700" fill="#1565c0">→ ${TL.slotEnd(hi)}</tspan><tspan x="200" dy="22" font-size="13" fill="#555">${durTxt(hi - lo + 1)}</tspan>`); y0 = 178;
@@ -373,7 +400,7 @@
     sh.querySelectorAll('[data-k]').forEach(b => b.onclick = () => {
       const k = b.dataset.k, all = entries(), cur = all[state.date] || { date: state.date };
       cur.slots = TL.paint(cur.slots || {}, k, lo, hi);
-      const dv = TL.derive(cur.slots); if (dv) { Object.assign(cur, dv); cur._auto = []; }
+      const dv = deriveFull(cur); if (dv) { Object.assign(cur, dv); cur._auto = []; }
       all[state.date] = cur; save(KEY_E, all);
       const added = k !== 'erase' && Object.keys(cur.slots).some(i => +i >= lo && +i <= hi && cur.slots[i].includes(k));
       close(); toast(`${b.textContent.replace('✓ 再點取消', '')} ${added ? '✓' : '已取消'}`);
@@ -414,7 +441,7 @@
 
   /** ⓘ:自動算出的明細 */
   function openInfo() {
-    const e = entries()[state.date] || {}, d = e.slots && Object.keys(e.slots).length ? TL.derive(e.slots) : null;
+    const e = entries()[state.date] || {}, d = deriveFull(e);
     const rows = d ? [['🛏 上床', d.bedTime], ['⏳ 入睡約', d.latencyMin !== '' ? d.latencyMin + ' 分' : ''], ['👀 中途醒', d.awakenings !== '' ? `${d.awakenings} 次 / ${d.awakeMin} 分` : ''],
       ['🌅 最後醒來', d.finalWake], ['🚪 起床', d.getUp], ['💤 小睡', d.napCount !== '' ? `${d.napCount} 次 / ${d.napMin} 分` : ''],
       ['☕ 最後咖啡因', d.caffeineLast ? d.caffeineLast + (e.caffeine ? ' ' + e.caffeine : '') : ''], ['🍺 最後飲酒', d.alcoholLast ? d.alcoholLast + (e.alcohol ? ' ' + e.alcohol : '') : ''],
@@ -480,6 +507,10 @@
         const ms = a2.filter(k => MCOL[k]);
         ms.forEach((k, n) => p.push(`<rect x="${(L + s * SW).toFixed(1)}" y="${y + 19 + n * (9 / ms.length)}" width="${(SW + 0.3).toFixed(1)}" height="${9 / ms.length}" fill="${MCOL[k]}"/>`));
       }
+      ((all[d] || {}).awakeIv || []).forEach(([f0, f1]) => {
+        const p0 = TL.slotPos(f0, d), p1 = Math.max(TL.slotPos(f1, d), p0 + 0.3);
+        p.push(`<rect x="${(L + Math.max(0, p0) * SW).toFixed(1)}" y="${y + 1}" width="${Math.max(2, (Math.min(60, p1) - Math.max(0, p0)) * SW).toFixed(1)}" height="16" fill="#ff9f1c"/>`);
+      });
       p.push('</g>');
     });
     const st = days.map(d => (all[d] || {}).slots).filter(s => s && Object.keys(s).length).map(s => {
@@ -527,6 +558,7 @@
   document.querySelectorAll('nav button').forEach(b => b.onclick = () => go(b.dataset.tab));
   renderTimerBar();
   enableSensor();                                            // Android 無需授權,先開始監聽以便顯示狀態
+  recoverAwake();
   go('night');
   if (!resumeNight() && !localStorage.getItem(KEY_I)) showIntro(0);
   document.addEventListener('visibilitychange', () => { if (document.visibilityState === 'visible') resumeNight(); });

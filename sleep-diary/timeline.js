@@ -107,7 +107,22 @@
     return slots;
   }
 
-  var api = { N: N, STATES: STATES, MARKS: MARKS, paint: paint, add: add, derive: derive, slotStart: slotStart, slotEnd: slotEnd, slotsFromSession: slotsFromSession };
+  /** 時間戳 → 時間軸上的小數格位置(0 = 前一天 18:00,60 = 當天 24:00),dateStr = 起床日。 */
+  function slotPos(ms, dateStr) {
+    var p = dateStr.split('-'), w0 = new Date(+p[0], +p[1] - 1, +p[2] - 1, 18, 0, 0).getTime();
+    return (ms - w0) / (STEP * 60000);
+  }
+
+  /** 精確的醒來時段 [[fromMs,toMs],...] 併入由格子反算的欄位:30 分鐘格子會吃掉短暫醒來,所以次數/分鐘取較大者。 */
+  function mergeAwake(d, ivs) {
+    if (!d || !ivs || !ivs.length) return d;
+    var ms = 0; ivs.forEach(function (iv) { ms += Math.max(0, iv[1] - iv[0]); });
+    d.awakenings = Math.max(+d.awakenings || 0, ivs.length);
+    d.awakeMin = Math.max(+d.awakeMin || 0, Math.max(1, Math.round(ms / 60000)));
+    return d;
+  }
+
+  var api = { slotPos: slotPos, mergeAwake: mergeAwake, N: N, STATES: STATES, MARKS: MARKS, paint: paint, add: add, derive: derive, slotStart: slotStart, slotEnd: slotEnd, slotsFromSession: slotsFromSession };
   if (typeof module !== 'undefined' && module.exports) module.exports = api;
   else root.SleepTimeline = api;
 })(typeof self !== 'undefined' ? self : this);

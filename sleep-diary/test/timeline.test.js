@@ -51,4 +51,13 @@ assert.deepStrictEqual(r[10], ['ritual']); assert.strictEqual(T.derive(r).ritual
 T.add(r, 'nap', 3); T.add(r, 'sleep', 3); assert.deepStrictEqual(r[3], ['sleep']);
 let u = {}; T.add(u, 'screen', 10); T.add(u, 'meal', 2); T.add(u, 'meal', 3);
 assert.strictEqual(T.derive(u).screen, '23:00-23:30'); assert.strictEqual(T.derive(u).meal, '19:00-20:00');
+// 精確醒來時段:短暫醒來不會被 30 分鐘格子吃掉
+const mm = 60000, w0 = new Date(2026, 10, 24, 18, 0).getTime();
+const ivs = [[w0 + 340 * mm, w0 + 343 * mm], [w0 + 430 * mm, w0 + 432 * mm]];   // 3 分 + 2 分
+assert.strictEqual(T.slotPos(w0 + 300 * mm, '2026-11-25'), 10);
+const base = { awakenings: 0, awakeMin: 0 };
+const mg = T.mergeAwake(Object.assign({}, base), ivs);
+assert.strictEqual(mg.awakenings, 2); assert.strictEqual(mg.awakeMin, 5);
+assert.strictEqual(T.mergeAwake({ awakenings: 3, awakeMin: 90 }, ivs).awakenings, 3);   // 格子反算較大時保留較大者
+assert.strictEqual(T.mergeAwake({ awakenings: '', awakeMin: '' }, []).awakenings, '');
 console.log('timeline tests passed');

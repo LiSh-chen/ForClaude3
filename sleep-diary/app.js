@@ -350,15 +350,12 @@
       }
       if (lo != null && i >= lo && i <= hi) over.push(`<path data-i="${i}" d="${sector(r0 - 2, r1 + 2, a0, a1)}" fill="rgba(25,118,210,.30)" stroke="#1565c0" stroke-width="${tl.sel ? 2.5 : 4}"/>`);
     }
-    parts.push(...over);
-    (e.awakeIv || []).forEach(([f0, f1]) => {   // 精確醒來時段:即使只有幾分鐘也畫出可見的橘色細線
-      let p0 = TL.slotPos(f0, e.date || state.date), p1 = Math.max(TL.slotPos(f1, e.date || state.date), p0 + 0.35);
-      if (p1 < 0 || p0 > 60) return;
-      const seg = (x, y) => { const inner = x < 12, [r0, r1] = inner ? [84, 124] : [128, 172], ang = q => inner ? 270 + q * 7.5 : (q - 12) * 7.5;
-        parts.push(`<path d="${sector(r0 - 3, r1 + 3, ang(x), ang(y))}" fill="#ff9f1c" stroke="#fff" stroke-width="1" pointer-events="none"/>`); };
-      p0 = Math.max(0, p0); p1 = Math.min(60, p1);
-      if (p0 < 12 && p1 > 12) { seg(p0, 12); seg(12, p1); } else seg(p0, p1);
+    // 精確醒來時段:同一個橘色、貼合圓環,只畫在還不是「躺著醒著」的格子(短暫醒來也看得見)
+    TL.awakeSegments(e.awakeIv, e.date || state.date, slots).forEach(([p0, p1]) => {
+      const inner = p0 < 12, [r0, r1] = inner ? [84, 124] : [128, 172], ang = q => inner ? 270 + q * 7.5 : (q - 12) * 7.5;
+      parts.push(`<path d="${sector(r0, r1, ang(p0), ang(p1))}" fill="${COL.inbed}" pointer-events="none"/>`);
     });
+    parts.push(...over);
     for (let h = 0; h < 24; h++) {   // 每小時刻度,每 3 小時標數字
       const [x1, y1] = pt(173, h * 15), [x2, y2] = pt(h % 3 ? 177 : 181, h * 15);
       parts.push(`<line x1="${f(x1)}" y1="${f(y1)}" x2="${f(x2)}" y2="${f(y2)}" stroke="${h % 3 ? '#bbb' : '#777'}"/>`);
@@ -519,9 +516,8 @@
         const ms = a2.filter(k => MCOL[k]);
         ms.forEach((k, n) => p.push(`<rect x="${(L + s * SW).toFixed(1)}" y="${y + 19 + n * (9 / ms.length)}" width="${(SW + 0.3).toFixed(1)}" height="${9 / ms.length}" fill="${MCOL[k]}"/>`));
       }
-      ((all[d] || {}).awakeIv || []).forEach(([f0, f1]) => {
-        const p0 = TL.slotPos(f0, d), p1 = Math.max(TL.slotPos(f1, d), p0 + 0.3);
-        p.push(`<rect x="${(L + Math.max(0, p0) * SW).toFixed(1)}" y="${y + 1}" width="${Math.max(2, (Math.min(60, p1) - Math.max(0, p0)) * SW).toFixed(1)}" height="16" fill="#ff9f1c"/>`);
+      TL.awakeSegments((all[d] || {}).awakeIv, d, slots).forEach(([p0, p1]) => {
+        p.push(`<rect x="${(L + p0 * SW).toFixed(1)}" y="${y + 2}" width="${Math.max(1.6, (p1 - p0) * SW).toFixed(1)}" height="14" fill="${COL.inbed}"/>`);
       });
       p.push('</g>');
     });

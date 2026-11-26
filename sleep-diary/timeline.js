@@ -152,7 +152,26 @@
     return d;
   }
 
-  var api = { slotPos: slotPos, mergeAwake: mergeAwake, deriveWithAwake: deriveWithAwake, N: N, STATES: STATES, MARKS: MARKS, paint: paint, add: add, derive: derive, slotStart: slotStart, slotEnd: slotEnd, slotsFromSession: slotsFromSession };
+  /**
+   * 精確醒來時段 → 要畫在時鐘/橫條上的小段 [[from,to],...](單位:格,小數)。
+   * 只保留「該格還不是躺著醒著」的部分(已是橘色的不重複畫),每段最少 0.3 格寬,確保幾分鐘的醒來也看得見。
+   */
+  function awakeSegments(ivs, dateStr, slots) {
+    var out = [];
+    (ivs || []).forEach(function (iv) {
+      var p0 = slotPos(iv[0], dateStr), p1 = Math.max(slotPos(iv[1], dateStr), p0 + 0.3);
+      p0 = Math.max(0, p0); p1 = Math.min(N, p1);
+      if (p1 <= p0) return;
+      for (var i = Math.floor(p0); i < Math.ceil(p1); i++) {
+        if (i < 0 || i >= N || has(slots || {}, i, 'inbed')) continue;
+        var a = Math.max(p0, i), b = Math.min(p1, i + 1);
+        if (b - a > 0.001) out.push([a, b]);
+      }
+    });
+    return out;
+  }
+
+  var api = { awakeSegments: awakeSegments, slotPos: slotPos, mergeAwake: mergeAwake, deriveWithAwake: deriveWithAwake, N: N, STATES: STATES, MARKS: MARKS, paint: paint, add: add, derive: derive, slotStart: slotStart, slotEnd: slotEnd, slotsFromSession: slotsFromSession };
   if (typeof module !== 'undefined' && module.exports) module.exports = api;
   else root.SleepTimeline = api;
 })(typeof self !== 'undefined' ? self : this);

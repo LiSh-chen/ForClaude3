@@ -85,4 +85,16 @@ assert.strictEqual(T.mergeAwake({ awakenings: '', awakeMin: '' }, []).awakenings
   const d3 = T.deriveWithAwake(sl3, iv, '2026-11-25');
   assert.strictEqual(d3.awakenings, 5); assert.strictEqual(d3.awakeMin, 45);
 }
+// 醒來標記只畫在「還不是躺著醒著」的格子,且最少 0.3 格寬
+{
+  const base1 = new Date(2026, 10, 26, 18, 0).getTime(), MM = 60000;
+  const sl = {}; T.paint(sl, 'sleep', 11, 25); T.paint(sl, 'inbed', 20, 21);          // 04:00–05:00 是躺著醒著(格 20、21)
+  const segs = T.awakeSegments([
+    [base1 + 340 * MM, base1 + 343 * MM],      // 3 分鐘 → 加寬到 0.3 格
+    [base1 + 600 * MM, base1 + 670 * MM]       // 04:00–05:10,橫跨格 20、21(已是橘色)與格 22(睡著)
+  ], '2026-11-27', sl);
+  assert.strictEqual(segs.length, 2);
+  assert.ok(Math.abs((segs[0][1] - segs[0][0]) - 0.3) < 1e-9);
+  assert.strictEqual(Math.floor(segs[1][0]), 22);                                      // 只剩落在格 22 的部分
+}
 console.log('timeline tests passed');

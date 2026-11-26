@@ -187,7 +187,7 @@
   function go(tab) {
     state.tab = tab;
     document.querySelectorAll('nav button').forEach(b => b.classList.toggle('on', b.dataset.tab === tab));
-    const H = { night: '記錄 · 今天要記什麼?', diary: '日記 · 點時鐘上的時段來記錄', week: '一週 · 近 7 天的睡眠', data: '設定 · 資料與說明' };
+    const H = { night: '記錄 · 今天要記什麼?', diary: '日記 · 點時鐘上的時段來記錄', week: '一週 · 上下滑動看更早的紀錄', data: '設定 · 資料與說明' };
     $('#sub').textContent = H[tab];
     VIEWS()[tab](); $('#app').scrollTop = 0;
   }
@@ -495,32 +495,9 @@
       <p class="hint">下方一排:😴 平均睡眠 · 🛏 平均上床 · 🌅 平均起床 · ⭐ 平均品質 · 📊 睡眠效率(睡著 ÷ 在床上)</p><button class="btn" id="shDone">完成</button>`);
     $('#shDone').onclick = close;
   }
-  function viewWeek() {
-    const all = entries(), end = new Date(state.date + 'T00:00'), days = [];
-    for (let k = 6; k >= 0; k--) { const d = new Date(end); d.setDate(d.getDate() - k); days.push(ymd(d)); }
-    const W = 360, L = 66, BW = W - L - 6, SW = BW / 60, RH = 44, TOP = 22, H = TOP + days.length * RH + 4, p = [];
-    p.push(`<rect x="${L + 8 * SW}" y="${TOP - 4}" width="${18 * SW}" height="${days.length * RH + 4}" fill="#eef0f8"/>`);
-    for (let k = 0; k <= 10; k++) {
-      const x = L + k * 6 * SW, h = (18 + 3 * k) % 24;
-      p.push(`<line x1="${x}" y1="${TOP - 4}" x2="${x}" y2="${H}" stroke="${h === 0 ? '#999' : '#dde2ee'}" stroke-width="${h === 0 ? 1.5 : 1}"/><text x="${x}" y="12" font-size="10" fill="#667" text-anchor="middle">${h}</text>`);
-    }
-    days.forEach((d, r) => {
-      const y = TOP + r * RH, slots = (all[d] || {}).slots || {}, has = Object.keys(slots).length, q = (all[d] || {}).quality;
-      p.push(`<g data-d="${d}" style="cursor:pointer"><rect x="0" y="${y - 2}" width="${W}" height="${RH - 2}" fill="transparent"/>`);
-      p.push(`<text x="4" y="${y + 13}" font-size="11" fill="${has ? '#1b2437' : '#aaa'}">${d.slice(5).replace('-', '/')}</text><text x="4" y="${y + 26}" font-size="10" fill="#889">週${WD[new Date(d + 'T00:00').getDay()]}</text>`);
-      if (q) p.push(`<circle cx="52" cy="${y + 16}" r="9" fill="${QCOL[q - 1]}"/><text x="52" y="${y + 16}" font-size="12" font-weight="700" fill="${qInk(q - 1)}" text-anchor="middle" dominant-baseline="central">${q}</text>`);
-      for (let s = 0; s < 60; s++) {
-        const a2 = slots[s]; if (!a2) continue;
-        const st = a2.find(k => COL[k]);
-        if (st) p.push(`<rect x="${(L + s * SW).toFixed(1)}" y="${y + 2}" width="${(SW + 0.3).toFixed(1)}" height="14" fill="${COL[st]}"/>`);
-        const ms = a2.filter(k => MCOL[k]);
-        ms.forEach((k, n) => p.push(`<rect x="${(L + s * SW).toFixed(1)}" y="${y + 19 + n * (9 / ms.length)}" width="${(SW + 0.3).toFixed(1)}" height="${9 / ms.length}" fill="${MCOL[k]}"/>`));
-      }
-      TL.awakeSegments((all[d] || {}).awakeIv, d, slots).forEach(([p0, p1]) => {
-        p.push(`<rect x="${(L + p0 * SW).toFixed(1)}" y="${y + 2}" width="${Math.max(1.6, (p1 - p0) * SW).toFixed(1)}" height="14" fill="${COL.inbed}"/>`);
-      });
-      p.push('</g>');
-    });
+  /** 一組日期的統計卡與提示(平均睡眠/上床/起床/品質/效率、最長最短、上床落差) */
+  function weekSummary(days) {
+    const all = entries();
     const st = days.map(d => all[d]).filter(e => e && e.slots && Object.keys(e.slots).length).map(e => {
       const s = e.slots, dd = deriveFull(e), inb = Object.keys(s).map(Number).filter(i => i < 36 && (s[i].includes('sleep') || s[i].includes('inbed')));
       return { sleep: dd && dd.tstMin !== '' ? dd.tstMin / 60 : 0, bed: inb.length ? Math.min(...inb) : null, up: inb.length ? Math.max(...inb) + 1 : null, inBed: dd && dd.tibMin !== '' ? dd.tibMin / 60 : inb.length / 2 };
@@ -533,13 +510,63 @@
     const avg = arr => arr.reduce((x, y) => x + y, 0) / arr.length, sT = i => TL.slotStart(Math.round(i));
     const effAll = st.length ? Math.round(100 * st.reduce((x, y) => x + y.sleep, 0) / st.reduce((x, y) => x + y.inBed, 0)) : 0;
     const sp = (ic, v, l, c) => `<span><em>${ic}</em><b${c ? ` style="color:${c}"` : ''}>${v}</b><small>${l}</small></span>`;
-    const stats = st.length ? `<div class="stats">${sp('😴', avg(st.map(x => x.sleep)).toFixed(1) + 'h', '平均睡眠')}${sp('🛏', sT(avg(st.map(x => x.bed))), '平均上床')}${sp('🌅', sT(avg(st.map(x => x.up))), '平均起床')}${qs.length ? sp('⭐', avg(qs).toFixed(1), '平均品質') : ''}${sp('📊', effAll + '%', '睡眠效率', effInfo(effAll)[0])}</div>` : '<div class="stats" style="font-weight:400;color:var(--sub)">這週還沒有紀錄,到「記錄」或「日記」開始吧</div>';
+    const stats = st.length ? `<div class="stats">${sp('😴', avg(st.map(x => x.sleep)).toFixed(1) + 'h', '平均睡眠')}${sp('🛏', sT(avg(st.map(x => x.bed))), '平均上床')}${sp('🌅', sT(avg(st.map(x => x.up))), '平均起床')}${qs.length ? sp('⭐', avg(qs).toFixed(1), '平均品質') : ''}${sp('📊', effAll + '%', '睡眠效率', effInfo(effAll)[0])}</div>` : '<div class="stats" style="font-weight:400;color:var(--sub)">這段期間沒有紀錄</div>';
+    return { stats, tips };
+  }
+
+  /** 一週:可上下滑動的時間軸(由最早紀錄到今天,最新在最下面)。標籤與統計跟著目前看到的日期更新。 */
+  function viewWeek() {
+    const all = entries(), todayS = ymd(new Date()), keys = Object.keys(all).filter(k => /^\d{4}-\d\d-\d\d$/.test(k)).sort();
+    const addD = (s, n) => { const d = new Date(s + 'T00:00'); d.setDate(d.getDate() + n); return ymd(d); };
+    const first = keys.length && keys[0] < addD(todayS, -27) ? keys[0] : addD(todayS, -27);
+    const last = keys.length && keys[keys.length - 1] > todayS ? keys[keys.length - 1] : todayS;
+    const days = []; for (let d = first; d <= last; d = addD(d, 1)) days.push(d);
+    const W = 360, L = 66, BW = W - L - 6, SW = BW / 60, RH = 44, H = days.length * RH + 4, p = [];
+    p.push(`<rect x="${L + 8 * SW}" y="0" width="${18 * SW}" height="${H}" fill="#eef0f8"/>`);
+    for (let k = 0; k <= 10; k++) { const x = L + k * 6 * SW, h = (18 + 3 * k) % 24; p.push(`<line x1="${x}" y1="0" x2="${x}" y2="${H}" stroke="${h === 0 ? '#999' : '#dde2ee'}" stroke-width="${h === 0 ? 1.5 : 1}"/>`); }
+    const axis = []; for (let k = 0; k <= 10; k++) axis.push(`<text x="${L + k * 6 * SW}" y="14" font-size="10" fill="#667" text-anchor="middle">${(18 + 3 * k) % 24}</text>`);
+    days.forEach((d, r) => {
+      const y = 2 + r * RH, e = all[d] || {}, slots = e.slots || {}, has = Object.keys(slots).length, q = e.quality, isToday = d === todayS, mon = new Date(d + 'T00:00').getDay() === 1;
+      if (isToday) p.push(`<rect x="2" y="${y - 1}" width="${W - 4}" height="${RH - 3}" rx="8" fill="#e6e9ff" opacity=".7"/>`);
+      if (mon && r > 0) p.push(`<line x1="4" y1="${y - 3}" x2="${W - 4}" y2="${y - 3}" stroke="#cfd4ec" stroke-dasharray="3 3"/>`);
+      p.push(`<g data-d="${d}" style="cursor:pointer"><rect x="0" y="${y - 2}" width="${W}" height="${RH - 2}" fill="transparent"/>`);
+      p.push(`<text x="6" y="${y + 13}" font-size="11" font-weight="${isToday ? 800 : 400}" fill="${isToday ? '#4a54c8' : has ? '#1b2437' : '#aaa'}">${d.slice(5).replace('-', '/')}</text><text x="6" y="${y + 26}" font-size="10" fill="${isToday ? '#4a54c8' : '#889'}">${isToday ? '今天' : '週' + WD[new Date(d + 'T00:00').getDay()]}</text>`);
+      if (q) p.push(`<circle cx="52" cy="${y + 16}" r="9" fill="${QCOL[q - 1]}"/><text x="52" y="${y + 16}" font-size="12" font-weight="700" fill="${qInk(q - 1)}" text-anchor="middle" dominant-baseline="central">${q}</text>`);
+      for (let s = 0; s < 60; s++) {
+        const a2 = slots[s]; if (!a2) continue;
+        const stt = a2.find(k => COL[k]);
+        if (stt) p.push(`<rect x="${(L + s * SW).toFixed(1)}" y="${y + 2}" width="${(SW + 0.3).toFixed(1)}" height="14" fill="${COL[stt]}"/>`);
+        const ms = a2.filter(k => MCOL[k]);
+        ms.forEach((k, n) => p.push(`<rect x="${(L + s * SW).toFixed(1)}" y="${y + 19 + n * (9 / ms.length)}" width="${(SW + 0.3).toFixed(1)}" height="${9 / ms.length}" fill="${MCOL[k]}"/>`));
+      }
+      TL.awakeSegments(e.awakeIv, d, slots).forEach(([p0, p1]) => {
+        p.push(`<rect x="${(L + p0 * SW).toFixed(1)}" y="${y + 2}" width="${Math.max(1.6, (p1 - p0) * SW).toFixed(1)}" height="14" fill="${COL.inbed}"/>`);
+      });
+      p.push('</g>');
+    });
     const leg = `<div class="leg"><span><i style="background:${COL.sleep}"></i>睡著</span><span><i style="background:${COL.inbed}"></i>躺著醒著</span><span><i style="background:${COL.nap}"></i>小睡</span><span><i style="background:#17a2b8"></i>活動(細條)</span><span><i style="background:${QCOL[0]};border-radius:50%"></i>→<i style="background:${QCOL[4]};border-radius:50%;margin-left:4px"></i>品質 1→5</span></div>`;
-    const prev = new Date(end); prev.setDate(prev.getDate() - 7); const next = new Date(end); next.setDate(next.getDate() + 7);
-    $('#app').innerHTML = `<div class="bar"><button class="ib" id="wPrev">◀</button><b style="flex:1;text-align:center">${days[0].slice(5).replace('-', '/')} – ${days[6].slice(5).replace('-', '/')}</b><button class="ib" id="wNext">▶</button><button class="ib noprint" id="wInfo">ⓘ</button><button class="ib noprint" id="wPrint">🖨</button></div>
-      <div class="wkcard"><svg class="wk" viewBox="0 0 ${W} ${H}">${p.join('')}</svg></div>${stats}${tips}${leg}`;
-    $('#wPrev').onclick = () => { state.date = ymd(prev); viewWeek(); };
-    $('#wNext').onclick = () => { state.date = ymd(next); viewWeek(); };
+    $('#app').innerHTML = `<div class="weekpage">
+      <div class="bar"><b class="wl" id="wLabel"></b><button class="ib t" id="wToday">回到本週</button><button class="ib noprint" id="wInfo">ⓘ</button><button class="ib noprint" id="wPrint">🖨</button></div>
+      <div class="wkcard"><svg class="wkax" viewBox="0 0 ${W} 20">${axis.join('')}</svg><div class="wkscroll" id="wkScroll"><svg viewBox="0 0 ${W} ${H}">${p.join('')}</svg></div></div>
+      <div id="wkStats"></div><div id="wkTips"></div>${leg}</div>`;
+    const sc = $('#wkScroll'), atBottom = () => sc.scrollHeight - sc.scrollTop - sc.clientHeight < 6, want = state.wkScroll;   // want = 上次離開時的位置(null = 最新)
+    let raf = 0;
+    const update = () => {
+      raf = 0;
+      if (!sc.isConnected) return;                              // 已切到別的分頁:略過殘留的回呼
+      const rowPx = sc.firstElementChild.getBoundingClientRect().height / days.length;
+      if (!rowPx || !isFinite(rowPx)) return;
+      const i0 = Math.max(0, Math.floor(sc.scrollTop / rowPx + 0.2)), i1 = Math.min(days.length - 1, Math.ceil((sc.scrollTop + sc.clientHeight) / rowPx - 0.2) - 1);
+      const vis = days.slice(i0, Math.max(i0, i1) + 1), sm = weekSummary(vis);
+      $('#wLabel').textContent = `${vis[0].slice(5).replace('-', '/')} – ${vis[vis.length - 1].slice(5).replace('-', '/')}`;
+      $('#wkStats').innerHTML = sm.stats; $('#wkTips').innerHTML = sm.tips;
+      $('#wToday').classList.toggle('dim', atBottom());
+    };
+    sc.addEventListener('scroll', () => { state.wkScroll = atBottom() ? null : sc.scrollTop; if (!raf) raf = requestAnimationFrame(update); }, { passive: true });   // 只在實際滑動時記錄位置;停在最新時之後回來仍停在最新
+    update();                                                  // 先渲染統計區,讓版面高度確定,再決定捲動位置
+    const pin = () => { if (!sc.isConnected) return; sc.scrollTop = want != null ? want : sc.scrollHeight; update(); };
+    pin(); requestAnimationFrame(pin);
+    $('#wToday').onclick = () => sc.scrollTo({ top: sc.scrollHeight, behavior: 'smooth' });
     $('#wInfo').onclick = openLegend; $('#wPrint').onclick = () => (window.AndroidBridge ? AndroidBridge.print() : window.print());
     document.querySelectorAll('[data-d]').forEach(g => g.onclick = () => { state.date = g.dataset.d; go('diary'); });
   }

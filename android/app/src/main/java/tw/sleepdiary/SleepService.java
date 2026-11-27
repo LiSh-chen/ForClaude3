@@ -62,7 +62,7 @@ public class SleepService extends Service implements SensorEventListener {
     @Override public void onSensorChanged(SensorEvent e) {
         FlipLogic.Event ev = logic.feed(System.currentTimeMillis(), e.values[2]);
         if (logic.restSign != SleepStore.restSign(this)) { SleepStore.setRestSign(this, logic.restSign); updateNotification(); }
-        if (ev != null && SleepStore.append(this, ev.type, ev.t)) { buzz(); updateNotification(); }
+        if (ev != null && SleepStore.append(this, ev.type, ev.t)) { if (!SleepStore.quiet(this)) buzz(); updateNotification(); }
     }
 
     @Override public void onAccuracyChanged(Sensor s, int a) {}
@@ -96,13 +96,16 @@ public class SleepService extends Service implements SensorEventListener {
     private Notification buildNotification() {
         Intent open = new Intent(this, MainActivity.class).addFlags(Intent.FLAG_ACTIVITY_SINGLE_TOP | Intent.FLAG_ACTIVITY_CLEAR_TOP);
         PendingIntent pi = PendingIntent.getActivity(this, 0, open, PendingIntent.FLAG_IMMUTABLE | PendingIntent.FLAG_UPDATE_CURRENT);
-        String text = (logic.armed() ? "翻面偵測中" : "請把手機放平以就緒") + " · 已記錄醒來 " + SleepStore.awakeCount(this) + " 次";
+        boolean quiet = SleepStore.quiet(this);
+        String text = quiet ? (logic.armed() ? "背景記錄中" : "請把手機放平以就緒")
+            : (logic.armed() ? "翻面偵測中" : "請把手機放平以就緒") + " · 已記錄醒來 " + SleepStore.awakeCount(this) + " 次";
         Notification.Builder b;
         if (Build.VERSION.SDK_INT >= 26) b = new Notification.Builder(this, CHANNEL);
         else b = new Notification.Builder(this);
         return b.setContentTitle("睡眠記錄中").setContentText(text)
             .setSmallIcon(android.R.drawable.ic_menu_recent_history)
-            .setOngoing(true).setShowWhen(false).setContentIntent(pi).build();
+            .setOngoing(true).setShowWhen(false).setContentIntent(pi)
+            .setVisibility(Notification.VISIBILITY_SECRET).build();   // 鎖屏上不顯示內容
     }
 
     private void startForegroundCompat() {

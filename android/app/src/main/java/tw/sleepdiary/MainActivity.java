@@ -110,6 +110,7 @@ public class MainActivity extends Activity {
             SleepService s = SleepService.instance;
             if (s != null) s.manual(type, t); else SleepStore.append(MainActivity.this, type, t);
         }
+        @JavascriptInterface public void setQuiet(boolean q) { SleepStore.setQuiet(MainActivity.this, q); }
         @JavascriptInterface public String getState() { return SleepStore.state(MainActivity.this, SleepService.instance != null); }
         @JavascriptInterface public void batterySettings() {
             runOnUiThread(() -> {

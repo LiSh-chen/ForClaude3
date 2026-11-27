@@ -18,6 +18,10 @@ final class SleepStore {
         p(c).edit().putBoolean("running", true).putLong("tryAt", tryAt).putString("events", ev).putInt("restSign", restSign).commit();
     }
 
+    /** 低干擾模式:不震動、通知不顯示醒來次數(由網頁設定同步過來)。預設開啟。 */
+    static synchronized void setQuiet(Context c, boolean q) { p(c).edit().putBoolean("quiet", q).commit(); }
+    static synchronized boolean quiet(Context c) { return p(c).getBoolean("quiet", true); }
+
     static synchronized void end(Context c) { p(c).edit().putBoolean("running", false).commit(); }
 
     static synchronized boolean running(Context c) { return p(c).getBoolean("running", false); }

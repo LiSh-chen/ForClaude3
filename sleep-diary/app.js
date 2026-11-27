@@ -4,7 +4,8 @@
   const TL = window.SleepTimeline;
   const $ = (s, el) => (el || document).querySelector(s);
   const WD = ['日', '一', '二', '三', '四', '五', '六'];
-  const KEY_E = 'sleepdiary.entries', KEY_S = 'sleepdiary.session';
+  const KEY_E = 'sleepdiary.entries', KEY_S = 'sleepdiary.session', KEY_Q = 'sleepdiary.lowkey';
+  const lowKey = () => localStorage.getItem(KEY_Q) !== '0';        // 低干擾模式(預設開啟)
 
   // ---------- 儲存 ----------
   const load = (k, d) => { try { return JSON.parse(localStorage.getItem(k)) ?? d; } catch (e) { return d; } };
@@ -67,7 +68,7 @@
     motion.det = new FlipDetector({ restSign: s.restSign });
     const last = s.events[s.events.length - 1]; if (last && last.type === 'awake') motion.det.state = 'awake';
     motion.flatSince = null;
-    if (navigator.vibrate) navigator.vibrate(60);
+    if (navigator.vibrate && !lowKey()) navigator.vibrate(60);
     renderNight();
   }
   async function enableSensor() {
@@ -104,7 +105,7 @@
     const last = s.events[s.events.length - 1];
     if ((last ? last.type : 'rest') === type) return;         // 重複的狀態不記
     s.events.push({ type, t }); save(KEY_S, s);
-    if (navigator.vibrate) navigator.vibrate(type === 'awake' ? [40, 60, 40] : 40);
+    if (navigator.vibrate && !lowKey()) navigator.vibrate(type === 'awake' ? [40, 60, 40] : 40);
     renderNight();
   }
   function startNight() {
@@ -132,11 +133,15 @@
     const s = session(); if (!s) return;
     const awake = (() => { const l = s.events[s.events.length - 1]; return l && l.type === 'awake'; })();
     const n = s.events.filter(x => x.type === 'awake').length;
-    const stat = NB
+    const q = lowKey(), armed = NB ? s.nArmed : !!motion.det, fresh = Date.now() - (s.tryAt || 0) < 120000;
+    let stat = NB
       ? (s.nArmed ? '✓ 背景偵測就緒 · 可以鎖屏' : s.nRunning ? '⏳ 請把手機放平,約 2 秒後就緒' : '⚠ 背景偵測未運作 · 請用下方按鈕')
       : (motion.det ? '✓ 翻面偵測就緒' : motion.ok ? '⏳ 請把手機放平,約 2 秒後就緒' : '⚠ 未偵測到感測器 · 請用下方按鈕');
-    const html = `
-      <div class="st"><b>${awake ? '👀 醒著' : '😴 睡眠中'}</b>${stat}<br>已記錄醒來 ${n} 次</div>
+    if (q && armed && !fresh) stat = '';                       // 低干擾:就緒提示只在剛開始顯示,之後不再提醒
+    const stHtml = q
+      ? `<div class="st"><b>🌙 睡眠記錄中</b>${stat}</div>`
+      : `<div class="st"><b>${awake ? '👀 醒著' : '😴 睡眠中'}</b>${stat}<br>已記錄醒來 ${n} 次</div>`;
+    const html = `${stHtml}
       <div class="ctl">
         <button id="nAwake">${awake ? '我再睡了' : '我醒了'}</button>
         <button id="nUp">☀ 起床</button>
@@ -273,7 +278,7 @@
   // ---------- 記錄 ----------
   /** 由格子反算欄位,再併入精確的醒來時段(30 分鐘格子會吃掉短暫醒來) */
   const deriveFull = e => (e && e.slots && Object.keys(e.slots).length) ? TL.deriveWithAwake(e.slots, e.awakeIv, e.date || state.date) : null;
-  const effInfo = p => p === '' || p == null ? ['#9aa0bd', ''] : p >= 85 ? ['#2e9e5b', '良好'] : p >= 75 ? ['#e0a100', '尚可'] : ['#e8743b', '偏低'];
+  const effInfo = p => lowKey() ? [p === '' || p == null ? '#9aa0bd' : '#1c2340', ''] : p === '' || p == null ? ['#9aa0bd', ''] : p >= 85 ? ['#2e9e5b', '良好'] : p >= 75 ? ['#e0a100', '尚可'] : ['#e8743b', '偏低'];
   const hmm = m => m === '' || m == null ? '' : `${Math.floor(m / 60)}h${pad(Math.round(m % 60))}`;
 
   /** 補救:舊版把短暫醒來吃掉了。原生服務的紀錄在結束後仍保留,啟動時比對「嘗試入睡時間」找到那晚的日記,補回精確醒來時段。 */
@@ -384,9 +389,13 @@
       const cards = [
         ['🛏 上床', has ? d.bedTime : '—', has && d.latencyMin !== '' ? `入睡約 ${d.latencyMin} 分` : '', '#4a54c8'],
         ['🌅 起床', d && d.getUp ? d.getUp : '—', d && d.tibMin !== '' ? `在床 ${hmm(d.tibMin)}` : '', '#f29f05'],
-        ['👀 中途醒', nA === null ? '—' : nA + ' 次', nA === null ? '' : nA ? `共 ${d.awakeMin} 分` : '一覺到天亮', '#e8743b'],
+        ['👀 中途醒', nA === null ? '—' : nA + ' 次', nA === null ? '' : nA ? `共 ${d.awakeMin} 分` : (lowKey() ? '沒有醒來紀錄' : '一覺到天亮'), '#e8743b'],
         ['📊 睡眠效率', d && d.effPct !== '' ? d.effPct + '%' : '—', el, ec]];
-      mini.innerHTML = cards.map(([l, v, s2, c]) => `<div class="mc" style="--ac:${c};${l.includes('效率') ? `--vc:${c}` : ''}"><small>${l}</small><b>${v}</b><small class="s2">${s2}</small></div>`).join('');
+      const hideEff = lowKey() && !state.showEff && d && d.effPct !== '';   // 低干擾:效率預設隱藏,點一下才顯示
+      mini.innerHTML = cards.map(([l, v, s2, c], i) => {
+        const eff = i === 3, accent = lowKey() ? '#8c95e0' : c;
+        return `<div class="mc"${eff && lowKey() && d && d.effPct !== '' ? ' data-eff="1" style="cursor:pointer;' : ' style="'}--ac:${accent};${eff ? `--vc:${hideEff ? '#9aa0bd' : c}` : ''}"><small>${l}</small><b>${hideEff && eff ? '點開看' : v}</b><small class="s2">${hideEff && eff ? '' : s2}</small></div>`;
+      }).join('');
     }
   }
 
@@ -418,8 +427,8 @@
   }
 
   const patch = (k, v, date) => { date = date || state.date; const all = entries(), cur = all[date] || { date }; cur[k] = v; all[date] = cur; save(KEY_E, all); };
-  const QCOL = ['#d64545', '#ec8a3b', '#e6c229', '#8bc34a', '#2e9e5b'];
-  const qInk = n => n === 2 || n === 3 ? '#1b2437' : '#fff';
+  const QCOL = ['#c5cae9', '#9fa8da', '#7986cb', '#5c6bc0', '#3949ab'];   // 單一色系深淺,不用紅綠評價
+  const qInk = n => n < 3 ? '#1b2437' : '#fff';
   const defType = date => [0, 6].includes(new Date(date + 'T00:00').getDay()) ? '休息日' : '工作日';
   const PRESETS = { alcohol: ['啤酒 350cc', '紅酒 150cc', '烈酒 45cc'], caffeine: ['咖啡 250cc', '茶 250cc', '可樂 330cc'], ritualNote: ['泡澡/泡腳', '閱讀', '冥想/呼吸', '伸展', '聽音樂', '寫日記', '熱飲', '關手機'] };
   const FIELD = { note: ['📝 備註', '例如:感冒'], ritualNote: ['🧘 做了什麼', '例如:泡澡、閱讀'], alcohol: ['🍺 種類/量', '啤酒 250cc'], caffeine: ['☕ 種類/量', '咖啡 250cc'], med: ['💊 名稱/劑量', 'Stilnox 50mg'] };
@@ -478,6 +487,7 @@
     drawClock(e);
     $('#grid').onclick = ev => { if (ev.target.closest('[data-c]')) return openSheet(); const c = ev.target.closest('[data-i]'); if (c) tapSlot(+c.dataset.i); };
     $('#bStar').onclick = () => openSheet();
+    $('#mini').onclick = ev => { if (ev.target.closest('[data-eff]')) { state.showEff = !state.showEff; drawClock(entries()[state.date] || {}); } };
     $('#bInfo').onclick = openInfo;
     $('#bType').onclick = () => { const cur = (entries()[state.date] || {}).dayType || defType(state.date); const nx = cur === '工作日' ? '休息日' : '工作日'; patch('dayType', nx); $('#bType').textContent = nx; };
     const shift = n => { const d = new Date(state.date + 'T00:00'); d.setDate(d.getDate() + n); state.date = ymd(d); viewDiary(); };
@@ -497,20 +507,25 @@
   }
   /** 一組日期的統計卡與提示(平均睡眠/上床/起床/品質/效率、最長最短、上床落差) */
   function weekSummary(days) {
-    const all = entries();
-    const st = days.map(d => all[d]).filter(e => e && e.slots && Object.keys(e.slots).length).map(e => {
+    const all = entries(), q = lowKey();
+    const rows = days.map(d => ({ d, e: all[d] })).filter(x => x.e && x.e.slots && Object.keys(x.e.slots).length).map(({ d, e }) => {
       const s = e.slots, dd = deriveFull(e), inb = Object.keys(s).map(Number).filter(i => i < 36 && (s[i].includes('sleep') || s[i].includes('inbed')));
-      return { sleep: dd && dd.tstMin !== '' ? dd.tstMin / 60 : 0, bed: inb.length ? Math.min(...inb) : null, up: inb.length ? Math.max(...inb) + 1 : null, inBed: dd && dd.tibMin !== '' ? dd.tibMin / 60 : inb.length / 2 };
+      return { d, quality: +e.quality || 0, sleep: dd && dd.tstMin !== '' ? dd.tstMin / 60 : 0, bed: inb.length ? Math.min(...inb) : null, up: inb.length ? Math.max(...inb) + 1 : null, inBed: dd && dd.tibMin !== '' ? dd.tibMin / 60 : inb.length / 2 };
     }).filter(x => x.bed !== null);
-    const qs = days.map(d => +(all[d] || {}).quality).filter(Boolean);
-    const per = days.map(d => { const s = (all[d] || {}).slots; if (!s || !Object.keys(s).length) return null; const k = Object.keys(s).map(Number).filter(i => i < 36 && (s[i].includes('sleep') || s[i].includes('inbed'))); const dd = deriveFull(all[d]); return { d, sleep: dd && dd.tstMin !== '' ? Math.round(dd.tstMin / 6) / 10 : Object.keys(s).filter(i => +i < 36 && s[i].includes('sleep')).length / 2, bed: k.length ? Math.min(...k) : null }; }).filter(x => x && x.bed !== null);
-    const mmdd = d => d.slice(5).replace('-', '/');
-    const tips = per.length >= 2 ? (() => { const lo = per.reduce((x, y) => y.sleep < x.sleep ? y : x), hi = per.reduce((x, y) => y.sleep > x.sleep ? y : x), beds = per.map(x => x.bed), gap = (Math.max(...beds) - Math.min(...beds)) / 2;
-      return `<div class="srow" style="margin:8px 0 0;padding:8px 12px;font-size:14px;line-height:1.7">⏳ 最長 <b>${mmdd(hi.d)}</b> ${hi.sleep}h · 最短 <b>${mmdd(lo.d)}</b> ${lo.sleep}h<br>🕒 上床時間落差 <b>${gap}</b> 小時 ${gap <= 1 ? '(很規律 👍)' : gap >= 2 ? '(落差偏大)' : ''}</div>`; })() : '';
-    const avg = arr => arr.reduce((x, y) => x + y, 0) / arr.length, sT = i => TL.slotStart(Math.round(i));
-    const effAll = st.length ? Math.round(100 * st.reduce((x, y) => x + y.sleep, 0) / st.reduce((x, y) => x + y.inBed, 0)) : 0;
+    const avg = arr => arr.reduce((x, y) => x + y, 0) / arr.length, sT = i => TL.slotStart(Math.round(i)), mmdd = d => d.slice(5).replace('-', '/');
     const sp = (ic, v, l, c) => `<span><em>${ic}</em><b${c ? ` style="color:${c}"` : ''}>${v}</b><small>${l}</small></span>`;
-    const stats = st.length ? `<div class="stats">${sp('😴', avg(st.map(x => x.sleep)).toFixed(1) + 'h', '平均睡眠')}${sp('🛏', sT(avg(st.map(x => x.bed))), '平均上床')}${sp('🌅', sT(avg(st.map(x => x.up))), '平均起床')}${qs.length ? sp('⭐', avg(qs).toFixed(1), '平均品質') : ''}${sp('📊', effAll + '%', '睡眠效率', effInfo(effAll)[0])}</div>` : '<div class="stats" style="font-weight:400;color:var(--sub)">這段期間沒有紀錄</div>';
+    if (!rows.length) return { stats: '<div class="stats" style="font-weight:400;color:var(--sub)">這段期間沒有紀錄</div>', tips: '' };
+    const beds = rows.map(x => x.bed), ups = rows.map(x => x.up), qs = rows.map(x => x.quality).filter(Boolean);
+    const spread = arr => (Math.max(...arr) - Math.min(...arr)) / 2, range = arr => `${sT(Math.min(...arr))}–${sT(Math.max(...arr))}`;
+    const effAll = Math.round(100 * rows.reduce((x, y) => x + y.sleep, 0) / rows.reduce((x, y) => x + y.inBed, 0));
+    const more = q ? state.wkMore : true;
+    const toggle = q ? `<span data-more="1" style="cursor:pointer;color:var(--pri)"><em>${state.wkMore ? '▴' : '▾'}</em><b style="font-size:13px">${state.wkMore ? '收起' : '更多'}</b><small>${state.wkMore ? '只看規律' : '睡眠時數、品質…'}</small></span>` : '';
+    const head = sp('🛏', sT(avg(beds)), '平均上床') + sp('🌅', sT(avg(ups)), '平均起床');
+    const extra = sp('😴', avg(rows.map(x => x.sleep)).toFixed(1) + 'h', '平均睡眠') + (qs.length ? sp('⭐', avg(qs).toFixed(1), '平均品質') : '') + sp('📊', effAll + '%', '睡眠效率', effInfo(effAll)[0]);
+    const stats = `<div class="stats">${head}${more ? extra : ''}${toggle}</div>`;
+    const regular = `🕒 上床時間相差 <b>${spread(beds)}</b> 小時 <span class="hint">(${range(beds)})</span><br>🌅 起床時間相差 <b>${spread(ups)}</b> 小時 <span class="hint">(${range(ups)})</span>`;
+    const best = rows.length >= 2 ? (() => { const lo = rows.reduce((x, y) => y.sleep < x.sleep ? y : x), hi = rows.reduce((x, y) => y.sleep > x.sleep ? y : x); return `<br>⏳ 最長 <b>${mmdd(hi.d)}</b> ${hi.sleep.toFixed(1)}h · 最短 <b>${mmdd(lo.d)}</b> ${lo.sleep.toFixed(1)}h`; })() : '';
+    const tips = rows.length >= 2 ? `<div class="srow" style="margin:8px 0 0;padding:8px 12px;font-size:14px;line-height:1.7">${regular}${more ? best : ''}</div>` : '';
     return { stats, tips };
   }
 
@@ -567,6 +582,7 @@
     const pin = () => { if (!sc.isConnected) return; sc.scrollTop = want != null ? want : sc.scrollHeight; update(); };
     pin(); requestAnimationFrame(pin);
     $('#wToday').onclick = () => sc.scrollTo({ top: sc.scrollHeight, behavior: 'smooth' });
+    $('#wkStats').onclick = ev => { if (ev.target.closest('[data-more]')) { state.wkMore = !state.wkMore; update(); } };
     $('#wInfo').onclick = openLegend; $('#wPrint').onclick = () => (window.AndroidBridge ? AndroidBridge.print() : window.print());
     document.querySelectorAll('[data-d]').forEach(g => g.onclick = () => { state.date = g.dataset.d; go('diary'); });
   }
@@ -577,11 +593,13 @@
     const n = Object.keys(all).length;
     $('#app').innerHTML = `
       <div class="srow"><button class="btn" id="bCsv">📤 匯出 CSV</button><p>把全部紀錄存成試算表檔,可拿給醫師或用 Excel 開啟</p></div>
+      <div class="srow"><label class="sw"><span>🌿 低干擾模式</span><input type="checkbox" id="swQuiet" ${lowKey() ? 'checked' : ''}><i></i></label><p>夜間不顯示醒來次數、不震動;不評價好壞,效率預設隱藏;一週頁先看規律。想看完整數字可關閉</p></div>
       ${NB ? '<div class="srow"><button class="btn alt" id="bBat">🔋 電池設定</button><p>請把本 App 設為「不受限制」,避免整夜偵測被系統關閉</p></div>' : ''}
       <div class="srow"><button class="btn alt" id="bHelp">❓ 使用導覽</button><p>重新查看每個按鈕與圖示的用法</p></div>
       <div class="srow"><button class="btn danger" id="bClr">🗑 清除所有資料</button><p>刪除這支手機上的全部紀錄,無法復原</p></div>
       <p class="hint" style="text-align:center;margin:4px 0 0">📅 已記錄 ${n} 天 · 🔒 資料只存在這支手機,不會上傳</p>`;
     $('#bHelp').onclick = () => showIntro(0);
+    $('#swQuiet').onchange = ev => { localStorage.setItem(KEY_Q, ev.target.checked ? '1' : '0'); if (NB && NB.setQuiet) NB.setQuiet(ev.target.checked); toast(ev.target.checked ? '🌿 低干擾模式已開啟' : '已關閉低干擾模式'); };
     if ($('#bBat')) $('#bBat').onclick = () => NB.batterySettings();
     $('#bCsv').onclick = () => {
       const q = v => `"${String(v ?? '').replace(/"/g, '""')}"`;
@@ -594,6 +612,7 @@
 
   document.querySelectorAll('nav button').forEach(b => b.onclick = () => go(b.dataset.tab));
   renderTimerBar();
+  if (NB && NB.setQuiet) NB.setQuiet(lowKey());              // 讓原生服務也依低干擾模式決定是否震動、顯示次數
   enableSensor();                                            // Android 無需授權,先開始監聽以便顯示狀態
   recoverAwake();
   go('night');
